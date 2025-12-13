@@ -35,98 +35,74 @@ st.sidebar.write(f"⏱️ 現在時間：{datetime.now().strftime('%Y-%m-%d %H:%
 
 # ===================== 抓取 JSON 賠率函數 =====================
 
+import xml.etree.ElementTree as ET
+
 def fetch_win_place_json(race_date: str, venue: str, start_race: int, end_race: int) -> pd.DataFrame:
     """
-    增強版：先拿 Session Cookies，再抓取 JSON
+    【修復版】改用 XML 接口抓取賠率，以繞過 JSON 接口的封鎖
+    URL: https://bet.hkjc.com/racing/getXML.aspx?type=winplaodds&date=...
     """
-    # 1. 建立一個 Session 物件 (它會自動保存 Cookies)
-    session = requests.Session()
     
-    # 2. 設定像真度極高的 Headers (模擬 Chrome 瀏覽器)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "/",
-        "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch",
-        "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
-        "X-Requested-With": "XMLHttpRequest"
-    }
-    
-    # 3. 關鍵步驟：先訪問一次賠率頁面，騙取 Cookies
-    init_url = f"https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch&date={race_date}&venue={venue}"
-    try:
-        session.get(init_url, headers=headers, timeout=10)
-    except Exception:
-        pass # 就算這步慢也沒關係，重點是拿到 cookie
-        
-    # 4. 現在才去抓 JSON
-    # 注意：馬會 JSON URL 有時需要 timestamp 參數來防止緩存
-    import time
-    ts = int(time.time() * 1000)
-    
-    json_url = (
-        "https://bet.hkjc.com/racing/getJSON.aspx"
+    # 改用 getXML.aspx 接口
+    url = (
+        "https://bet.hkjc.com/racing/getXML.aspx"
         f"?type=winplaodds&date={race_date}&venue={venue}"
-        f"&start={start_race}&end={end_race}&_{ts}"
+        f"&start={start_race}&end={end_race}"
     )
 
+    # 模擬真實瀏覽器的 Headers
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch",
+        "Accept": "application/xml, text/xml, /",
+    }
+
     try:
-        resp = session.get(json_url, headers=headers, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
         
-        text = resp.text.strip()
-        
-        # 除錯用：如果抓回來是空的，印出來看看
-        if not text:
-            st.error("馬會回傳了空數據。可能今日無賽事，或 IP 被暫時封鎖。")
+        # 解析 XML
+        try:
+            root = ET.fromstring(resp.content)
+        except ET.ParseError:
+            # 如果 XML 解析失敗，可能是真的被完全封鎖，或者是編碼問題
+            st.error("無法解析馬會數據 (XML 格式錯誤)。可能今日無賽事或 IP 被封鎖。")
             return pd.DataFrame()
-            
-        # 嘗試解析 JSON
-        raw_json = json.loads(text)
-        
-        # --- 以下解析邏輯保持不變 ---
-        odds_root = raw_json.get("OUT", {}).get("WINPLAODDS", {})
-        meetings = odds_root.get("MEETING", [])
 
         rows = []
-        for meet in meetings:
-            races = meet.get("RACE", [])
-            for r in races:
-                race_no_str = r.get("NO") or r.get("RACENO")
+        
+        # XML 結構通常是: <WINPLAODDS><MEETING><RACE><HORSE>...</HORSE></RACE></MEETING></WINPLAODDS>
+        # 我們直接找所有的 "HORSE" 標籤
+        for race in root.findall(".//RACE"):
+            try:
+                race_no = int(race.get("NO"))
+            except:
+                continue
+                
+            for horse in race.findall("HORSE"):
                 try:
-                    race_no = int(race_no_str)
+                    horse_no = horse.get("NO")
+                    horse_name = horse.get("NAME_C") # 中文名
+                    win_odds_str = horse.get("WIN_ODDS")
+                    
+                    if not win_odds_str or win_odds_str in ["-", "0", "0.0", ""]:
+                        continue
+                        
+                    win_odds = float(win_odds_str)
+                    
+                    rows.append({
+                        "RaceID": race_no,
+                        "HorseNo": horse_no,
+                        "HorseName": horse_name,
+                        "Odds_Current": win_odds
+                    })
                 except:
                     continue
 
-                horses = r.get("HORSE", [])
-                for h in horses:
-                    horse_no = h.get("NO")
-                    horse_name = h.get("NAME_C") or h.get("NAME_E")
-                    win_odds_str = h.get("WIN_ODDS")
-
-                    if not win_odds_str or win_odds_str in ["-", "0", "0.0", ""]:
-                        continue
-                    
-                    try:
-                        rows.append({
-                            "RaceID": race_no,
-                            "HorseNo": horse_no,
-                            "HorseName": horse_name,
-                            "Odds_Current": float(win_odds_str)
-                        })
-                    except:
-                        continue
-                        
         return pd.DataFrame(rows)
 
-    except json.JSONDecodeError:
-        # 這是最常見的錯誤，通常是因為回傳了 HTML 錯誤頁
-        st.error("抓取失敗：馬會回傳的不是 JSON。請檢查賽事日期是否正確，或稍後再試。")
-        # 如果是在 Streamlit Cloud，這裡可以印出前 500 個字元來 debug
-        st.code(text[:500] if 'text' in locals() else "No response text")
-        return pd.DataFrame()
-        
     except Exception as e:
-        st.error(f"連線錯誤: {e}")
+        st.error(f"連線錯誤 (XML): {e}")
         return pd.DataFrame()
 
 # ===================== 主流程：抓實時賠率 =====================
