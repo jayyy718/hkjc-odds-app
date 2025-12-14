@@ -20,33 +20,40 @@ def get_global_data():
 
 race_storage = get_global_data()
 
-# ===================== 1. 頁面配置與 CSS (修復版) =====================
+# ===================== 1. 頁面配置與高對比 CSS =====================
 st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 st.markdown("""
 <style>
-    /* 全局字體設定 */
+    /* 全局設定 */
     .stApp { 
         background-color: #f5f7f9; 
-        color: #333333; 
+        color: #000000 !important; /* 強制全域文字黑 */
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     }
     
-    /* 側邊欄強制修復：白底深字 */
-    section[data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #eeeeee;
+    /* 側邊欄修復 */
+    section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
+    section[data-testid="stSidebar"] * { color: #333333 !important; }
+
+    /* === 管理員控制台高對比優化 === */
+    /* 輸入框標題 */
+    .stTextArea label p {
+        font-size: 16px !important;
+        color: #000000 !important;
+        font-weight: 700 !important;
     }
-    
-    /* 強制側邊欄內所有文字顏色為深灰，防止白底白字 */
-    section[data-testid="stSidebar"] h1, 
-    section[data-testid="stSidebar"] h2, 
-    section[data-testid="stSidebar"] h3, 
-    section[data-testid="stSidebar"] span, 
-    section[data-testid="stSidebar"] label, 
-    section[data-testid="stSidebar"] div,
-    section[data-testid="stSidebar"] p {
-        color: #333333 !important;
+    /* 輸入框內的文字 */
+    .stTextArea textarea {
+        color: #000000 !important;
+        font-weight: 500 !important;
+        border: 1px solid #999 !important; /* 加深邊框 */
+    }
+    /* 摺疊選單標題 */
+    .streamlit-expanderHeader p {
+        font-size: 18px !important;
+        color: #1a237e !important;
+        font-weight: 800 !important;
     }
 
     /* 標題區塊 */
@@ -54,58 +61,42 @@ st.markdown("""
         display: flex; justify-content: space-between; align-items: baseline;
         border-bottom: 3px solid #1a237e; padding-bottom: 10px; margin-bottom: 20px;
     }
-    .main-title {
-        color: #1a237e; font-weight: 800; font-size: 32px; letter-spacing: 1px;
-    }
-    .author-tag {
-        font-size: 14px; color: #fff; background-color: #1a237e; 
-        padding: 4px 12px; border-radius: 4px; margin-left: 10px; 
-        vertical-align: middle; font-weight: 500;
-    }
-    .sub-title {
-        color: #555; font-size: 16px; font-weight: 600; text-transform: uppercase;
-    }
+    .main-title { color: #1a237e; font-weight: 800; font-size: 32px; letter-spacing: 1px; }
+    .author-tag { font-size: 14px; color: #fff; background-color: #1a237e; padding: 4px 12px; border-radius: 4px; margin-left: 10px; vertical-align: middle; }
+    .sub-title { color: #555; font-size: 16px; font-weight: 600; text-transform: uppercase; }
     
-    /* 專業卡片樣式 */
-    .horse-card {
-        background-color: white; padding: 20px; border-radius: 4px; 
-        border: 1px solid #e0e0e0; border-top: 4px solid #1a237e;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 15px;
-    }
-    .top-pick-card {
-        background-color: #fff; border-top: 4px solid #c62828; 
-        border-left: 1px solid #e0e0e0; border-right: 1px solid #e0e0e0; border-bottom: 1px solid #e0e0e0;
-    }
+    /* 專業卡片 */
+    .horse-card { background-color: white; padding: 20px; border-radius: 4px; border: 1px solid #ccc; border-top: 4px solid #1a237e; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; }
+    .top-pick-card { background-color: #fff; border-top: 4px solid #c62828; }
     
     /* 數據標籤 */
-    .metric-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-    .metric-value { font-size: 24px; font-weight: 700; color: #222; font-family: 'Roboto Mono', monospace; }
+    .metric-label { font-size: 13px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+    .metric-value { font-size: 24px; font-weight: 700; color: #000; font-family: 'Roboto Mono', monospace; }
     
     /* 狀態標籤 */
-    .status-tag {
-        display: inline-block; padding: 2px 8px; border-radius: 2px; 
-        font-size: 11px; font-weight: bold; text-transform: uppercase;
-    }
+    .status-tag { display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
     .tag-drop { background-color: #ffebee; color: #c62828; } 
     .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
     .tag-top { background-color: #1a237e; color: white; }    
     
-    /* 按鈕與連結 */
-    .stButton>button {
-        background-color: #1a237e; color: white; border-radius: 4px; 
-        height: 45px; font-weight: 600; border: none; text-transform: uppercase;
-    }
+    /* 按鈕 */
+    .stButton>button { background-color: #1a237e; color: white; border-radius: 4px; height: 45px; font-weight: 600; border: none; text-transform: uppercase; }
     .stButton>button:hover { background-color: #283593; }
+    
+    /* 連結樣式 */
+    .source-link {
+        display: inline-block; margin-right: 15px; text-decoration: none;
+        color: #1a237e; font-weight: bold; font-size: 14px;
+        padding: 5px 10px; background-color: #e8eaf6; border-radius: 4px;
+    }
+    .source-link:hover { background-color: #c5cae9; }
 </style>
 """, unsafe_allow_html=True)
 
 # 標題
 st.markdown("""
 <div class="title-container">
-    <div>
-        <span class="main-title">賽馬智腦</span>
-        <span class="author-tag">By Jay</span>
-    </div>
+    <div><span class="main-title">賽馬智腦</span><span class="author-tag">By Jay</span></div>
     <div class="sub-title">REAL-TIME ODDS TRACKER</div>
 </div>
 """, unsafe_allow_html=True)
@@ -178,7 +169,7 @@ def parse_info_data(text):
     if rows: return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
     return pd.DataFrame()
 
-# ===================== 4. 側邊欄導航 (修復文字顯示) =====================
+# ===================== 4. 側邊欄導航 =====================
 with st.sidebar:
     st.markdown("### 賽事導航")
     selected_race = st.selectbox("選擇場次", options=range(1, 15), format_func=lambda x: f"第 {x} 場 (Race {x})")
@@ -187,24 +178,31 @@ with st.sidebar:
     st.markdown("### 管理員登入")
     password = st.text_input("輸入密碼", type="password")
     is_admin = (password == "jay123")
-
-    if is_admin:
-        st.success("已解鎖編輯權限")
-    
+    if is_admin: st.success("已解鎖編輯權限")
     st_autorefresh(interval=10000, key="data_refresher")
 
 current_race_data = race_storage[selected_race]
 
-# ===================== 5. 管理員控制台 =====================
+# ===================== 5. 管理員控制台 (字體已加深) =====================
 if is_admin:
-    with st.expander(f"數據控制台 - 第 {selected_race} 場", expanded=True):
+    with st.expander(f"數據控制台 Data Console - 第 {selected_race} 場", expanded=True):
+        
+        # 這裡加入網址連結
+        st.markdown("""
+        <div style="margin-bottom:15px; padding:10px; background-color:#f0f2f6; border-radius:5px;">
+            <b style="color:#000;">數據來源：</b>
+            <a href="https://www.51saima.com/mobi/odds.jsp" target="_blank" class="source-link">🔗 51saima (賠率)</a>
+            <a href="https://racing.hkjc.com/racing/information/Chinese/racing/RaceCard.aspx" target="_blank" class="source-link">🔗 HKJC (排位)</a>
+        </div>
+        """, unsafe_allow_html=True)
+
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("#### 賠率表來源")
-            new_odds = st.text_area("Odds Input", value=current_race_data["raw_odds_text"], height=150, key=f"odds_{selected_race}")
+            st.markdown("**1. 賠率數據 (Odds)**")
+            new_odds = st.text_area("請貼上 51saima 賠率", value=current_race_data["raw_odds_text"], height=150, key=f"odds_{selected_race}", help="在此貼上複製的賠率數據")
         with c2:
-            st.markdown("#### 排位表來源")
-            new_info = st.text_area("Info Input", value=current_race_data["raw_info_text"], height=150, key=f"info_{selected_race}")
+            st.markdown("**2. 排位數據 (Info)**")
+            new_info = st.text_area("請貼上 HKJC 排位", value=current_race_data["raw_info_text"], height=150, key=f"info_{selected_race}", help="在此貼上複製的排位數據")
         
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
@@ -213,7 +211,6 @@ if is_admin:
                 if not df_odds.empty:
                     df_info = parse_info_data(new_info) if new_info else pd.DataFrame()
                     if not df_info.empty: df_odds = df_odds.join(df_info, how="left")
-                    
                     for col in ["騎師", "練馬師"]:
                         if col not in df_odds.columns: df_odds[col] = "未知"
                         df_odds[col] = df_odds[col].fillna("未知")
@@ -227,11 +224,10 @@ if is_admin:
                     current_race_data["raw_odds_text"] = new_odds
                     current_race_data["raw_info_text"] = new_info
                     current_race_data["last_update"] = datetime.now().strftime("%H:%M:%S")
-                    
                     st.success("數據已更新")
                     st.rerun()
                 else:
-                    st.error("解析失敗")
+                    st.error("解析失敗，請檢查格式")
         
         with col_btn2:
             if st.button(f"清空第 {selected_race} 場", use_container_width=True):
@@ -263,10 +259,8 @@ if not current_race_data["current_df"].empty:
         elif trend >= 10: s += 35
         elif trend >= 5: s += 20
         elif trend <= -10: s -= 20
-        
         if row["現價"] <= 5.0: s += 25
         elif row["現價"] <= 10.0: s += 10
-        
         j = get_ability_score(row["騎師"], JOCKEY_RANK)
         t = get_ability_score(row["練馬師"], TRAINER_RANK)
         s += j * 2.5
@@ -278,7 +272,6 @@ if not current_race_data["current_df"].empty:
     
     st.caption(f"DATA UPDATED: {update_time}")
     
-    # 重心馬卡片
     top_picks = df[df["得分"] >= 65]
     if not top_picks.empty:
         st.markdown("**重心推薦 TOP PICKS**")
@@ -312,7 +305,6 @@ if not current_race_data["current_df"].empty:
                     </div>
                     """, unsafe_allow_html=True)
     
-    # 完整表格
     st.markdown("**全場形勢 GENERAL OVERVIEW**")
     st.dataframe(
         df[["馬號", "馬名", "現價", "上回賠率", "真實走勢(%)", "騎師", "練馬師", "得分"]],
@@ -327,5 +319,4 @@ if not current_race_data["current_df"].empty:
 
 else:
     st.info(f"等待數據更新 (Status: Waiting for data input - Race {selected_race})")
-    if is_admin:
-        st.write("請在上方控制台輸入並發布數據。")
+    if is_admin: st.write("請在上方控制台輸入並發布數據。")
