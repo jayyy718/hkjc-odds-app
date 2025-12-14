@@ -4,12 +4,10 @@ import re
 import json
 import os
 import matplotlib
-# 強制使用非互動式後端，防止雲端環境報錯
+# 強制使用 Agg 後端
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-# 引入字體管理器，用於檢測可用字體
-from matplotlib.font_manager import FontProperties, findfont
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
@@ -17,39 +15,14 @@ from streamlit_autorefresh import st_autorefresh
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# Regex 預編譯
 REGEX_INT = re.compile(r'^\d+$')
 REGEX_FLOAT = re.compile(r'\d+\.?\d*')
 REGEX_CHN = re.compile(r'[\u4e00-\u9fa5]+')
 
-# --- [關鍵修復] 字體檢測系統 ---
-def get_safe_font():
-    """
-    嘗試尋找可用的中文字體。如果找不到，回傳預設英文字體，確保程式不崩潰。
-    """
-    # 常見中文字體列表 (Windows, Mac, Linux)
-    candidates = ['Microsoft YaHei', 'SimHei', 'PingFang HK', 'Heiti TC', 'WenQuanYi Micro Hei', 'Droid Sans Fallback']
-    
-    # 檢查系統是否有這些字體
-    for font in candidates:
-        try:
-            if findfont(font, fallback_to_default=False):
-                return font
-        except:
-            continue
-            
-    # 如果都找不到（例如在 Streamlit Cloud），回傳 None，讓 Matplotlib 用預設字體
-    return None
-
-# 設定字體
-SAFE_FONT = get_safe_font()
-if SAFE_FONT:
-    plt.rcParams['font.sans-serif'] = [SAFE_FONT]
-    plt.rcParams['axes.unicode_minus'] = False
-else:
-    # 雲端環境通常沒有中文，這裡不強制設中文，避免報錯
-    # 圖表可能會顯示方塊字，但至少圖會出來
-    pass
+# --- 簡化字體設定 (先求有，再求好) ---
+# 優先嘗試常見中文字體，如果沒有，就用系統預設
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'WenQuanYi Micro Hei', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
 
 @st.cache_resource
 def get_global_data():
@@ -98,35 +71,36 @@ def load_history():
             return json.load(f)
     return {}
 
-# --- [核心] 圖表繪製函數 (加強版) ---
+# --- [診斷模式] 圖表繪製函數 ---
 def plot_horse_chart(df, race_num, date_str=None):
     if df.empty:
+        st.warning("⚠️ 無法繪圖：數據表為空")
         return None
 
     try:
         # 1. 數據準備
         df_plot = df.sort_values("得分", ascending=True)
         
+        # 強制轉換數據類型，防止報錯
         names = df_plot["馬名"].astype(str).tolist()
         nos = df_plot["馬號"].astype(str).tolist()
-        scores = df_plot["得分"].astype(float).tolist()
+        scores = df_plot["得分"].fillna(0).astype(float).tolist()
         jockeys = df_plot["騎師"].astype(str).tolist()
         trainers = df_plot["練馬師"].astype(str).tolist()
         
-        # 2. 顏色
+        # 2. 顏色映射
         norm = mcolors.Normalize(vmin=0, vmax=100)
         cmap = plt.get_cmap('RdYlGn')
         colors = [cmap(norm(s)) for s in scores]
         
-        # 3. 畫布
+        # 3. 建立畫布
         fig, ax = plt.subplots(figsize=(10, len(df)*0.6 + 1.5))
         
-        # 4. 繪圖
+        # 4. 繪製
         y_pos = range(len(df))
         bars = ax.barh(y_pos, scores, color=colors, height=0.7)
         
-        # 5. Y 軸標籤 (馬名)
-        # 如果是雲端沒字體，這裡可能會變方塊，但至少圖會出來
+        # 5. Y軸
         y_labels = [f"{no}. {name}" for no, name in zip(nos, names)]
         ax.set_yticks(y_pos)
         ax.set_yticklabels(y_labels, fontsize=12, fontweight='bold')
@@ -134,39 +108,32 @@ def plot_horse_chart(df, race_num, date_str=None):
         # 6. Bar 內部文字
         for bar, score, j, t in zip(bars, scores, jockeys, trainers):
             width = bar.get_width()
-            label_text = f"{j} - {t}   {score}"
+            label_text = f"{j}-{t} {score}"
             
-            text_x = width - 1 
             if width > 20:
-                ax.text(text_x, bar.get_y() + bar.get_height()/2, label_text, 
-                        ha='right', va='center', color='black', fontsize=10, fontweight='bold',
-                        bbox=dict(facecolor='white', alpha=0.4, edgecolor='none', pad=0.5))
+                ax.text(width - 1, bar.get_y() + bar.get_height()/2, label_text, 
+                        ha='right', va='center', color='black', fontsize=10, fontweight='bold')
             else:
                 ax.text(width + 1, bar.get_y() + bar.get_height()/2, label_text,
                         ha='left', va='center', color='black', fontsize=10)
 
         # 7. 修飾
-        current_date = date_str if date_str else datetime.now(HKT).strftime("%m-%d")
-        # 標題改用英文或簡單符號，避免沒字體時變方塊
-        ax.set_title(f"RACE {race_num} ANALYSIS ({current_date})", fontsize=16, pad=15, fontweight='bold')
+        date_display = date_str if date_str else datetime.now(HKT).strftime("%m-%d")
+        ax.set_title(f"Race {race_num} Analysis ({date_display})", fontsize=16, pad=15)
         ax.set_xlabel("AI Score", fontsize=11)
-        
-        ax.grid(axis='x', linestyle='--', alpha=0.5)
-        ax.set_axisbelow(True)
-        ax.set_xlim(0, 105) 
+        ax.set_xlim(0, 105)
         
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        
-        fig.patch.set_facecolor('#f8f9fa')
-        ax.set_facecolor('#f8f9fa')
         
         plt.tight_layout()
         return fig
+
     except Exception as e:
-        # 印出具體錯誤，幫助除錯
-        print(f"Plot Error: {e}")
+        # [關鍵] 這裡會直接把錯誤印在網頁上
+        st.error(f"❌ 圖表繪製失敗 (Chart Error): {str(e)}")
+        # 嘗試印出更詳細的資訊
+        st.write("Debug info:", df.head())
         return None
 
 # ===================== 2. 數據庫與計算 =====================
@@ -403,6 +370,8 @@ if app_mode == "📡 實時 (Live)":
         # 3. 顯示視覺化圖表
         st.markdown("---")
         st.markdown("##### 📊 賽事形勢圖 (Visual Chart)")
+        
+        # 這裡會直接印出錯誤，如果有問題的話
         fig = plot_horse_chart(df, selected_race)
         if fig:
             st.pyplot(fig, use_container_width=True)
@@ -421,7 +390,6 @@ elif app_mode == "📜 歷史 (History)":
         df_hist["得分"] = df_hist.apply(calculate_score, axis=1)
         df_hist = df_hist.sort_values(["得分", "現價"], ascending=[False, True])
         
-        # 歷史 Top Picks
         top_picks = df_hist[df_hist["得分"] >= 65]
         if not top_picks.empty:
             st.markdown("**TOP PICKS (Record)**")
@@ -439,7 +407,6 @@ elif app_mode == "📜 歷史 (History)":
         
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
         
-        # 歷史圖表
         st.markdown("---")
         st.markdown("##### 📊 歷史形勢圖")
         fig_hist = plot_horse_chart(df_hist, selected_history_race, date_str=selected_date)
