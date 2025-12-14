@@ -3,6 +3,9 @@ import pandas as pd
 import re
 import json
 import os
+import matplotlib
+# [關鍵修正] 強制使用 Agg 後端，解決網頁不顯示圖表的問題
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from datetime import datetime, timedelta, timezone
@@ -17,9 +20,10 @@ REGEX_INT = re.compile(r'^\d+$')
 REGEX_FLOAT = re.compile(r'\d+\.?\d*')
 REGEX_CHN = re.compile(r'[\u4e00-\u9fa5]+')
 
-# --- Matplotlib 中文字體設定 ---
-# 嘗試載入常見的中文字體，解決方塊字問題
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS', 'PingFang HK', 'Heiti TC', 'sans-serif']
+# --- Matplotlib 中文字體設定 (自動偵測) ---
+# 這些是常見的中文字體，系統會自動使用第一個找到的
+FONT_LIST = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS', 'PingFang HK', 'Heiti TC', 'sans-serif']
+plt.rcParams['font.sans-serif'] = FONT_LIST
 plt.rcParams['axes.unicode_minus'] = False
 
 @st.cache_resource
@@ -69,77 +73,76 @@ def load_history():
             return json.load(f)
     return {}
 
-# --- 核心圖表繪製函數 ---
+# --- [核心] 圖表繪製函數 (模仿圖片風格) ---
 def plot_horse_chart(df, race_num, date_str=None):
-    # 1. 數據準備：按得分排序 (Matplotlib barh 是從下往上畫，所以要從小到大排，這樣高分才會在上面)
-    df_plot = df.sort_values("得分", ascending=True)
-    
-    names = df_plot["馬名"].tolist()
-    nos = df_plot["馬號"].tolist()
-    scores = df_plot["得分"].tolist()
-    jockeys = df_plot["騎師"].tolist()
-    trainers = df_plot["練馬師"].tolist()
-    
-    # 2. 顏色映射 (紅->黃->綠)
-    # Normalize 分數 0-100 到 0-1
-    norm = mcolors.Normalize(vmin=0, vmax=100)
-    # 使用 RdYlGn (Red-Yellow-Green) 顏色表
-    cmap = plt.get_cmap('RdYlGn')
-    colors = [cmap(norm(s)) for s in scores]
-    
-    # 3. 建立畫布
-    # 高度隨馬匹數量動態調整
-    fig, ax = plt.subplots(figsize=(12, len(df)*0.6 + 1.5))
-    
-    # 4. 繪製水平條形圖
-    y_pos = range(len(df))
-    bars = ax.barh(y_pos, scores, color=colors, height=0.7)
-    
-    # 5. 設定 Y 軸標籤 (馬號. 馬名)
-    y_labels = [f"{no}. {name}" for no, name in zip(nos, names)]
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(y_labels, fontsize=11, fontweight='bold')
-    
-    # 6. 在 Bar 內部加上文字 (參考圖片格式)
-    # 格式: 騎師 - 練馬師  分數
-    for bar, score, j, t in zip(bars, scores, jockeys, trainers):
-        width = bar.get_width()
-        label_text = f"{j} - {t}   {score}"
+    try:
+        # 1. 數據準備：按得分排序 (Barh 是從下往上畫，所以從小到大排)
+        df_plot = df.sort_values("得分", ascending=True)
         
-        # 根據 Bar 的長度決定文字顏色 (深色背景配白字，淺色配黑字，這裡簡化為黑字加強對比或陰影)
-        # 為了像圖片，我們放在 Bar 內部的右側
-        text_x = width - 1  # 稍微往左縮一點
+        names = df_plot["馬名"].tolist()
+        nos = df_plot["馬號"].tolist()
+        scores = df_plot["得分"].tolist()
+        jockeys = df_plot["騎師"].tolist()
+        trainers = df_plot["練馬師"].tolist()
         
-        if width > 15: # 如果 bar 夠長才畫在裡面
-            ax.text(text_x, bar.get_y() + bar.get_height()/2, label_text, 
-                    ha='right', va='center', color='black', fontsize=10, fontweight='bold',
-                    bbox=dict(facecolor='white', alpha=0.3, edgecolor='none', pad=1)) # 加一點半透明底色增加可讀性
-        else:
-            # Bar 太短畫在外面
-            ax.text(width + 1, bar.get_y() + bar.get_height()/2, label_text,
-                    ha='left', va='center', color='black', fontsize=10)
+        # 2. 顏色映射 (紅 -> 黃 -> 綠)
+        norm = mcolors.Normalize(vmin=0, vmax=100)
+        cmap = plt.get_cmap('RdYlGn')
+        colors = [cmap(norm(s)) for s in scores]
+        
+        # 3. 建立畫布 (高度自動調整)
+        fig, ax = plt.subplots(figsize=(12, len(df)*0.6 + 1.5))
+        
+        # 4. 繪製水平條形圖
+        y_pos = range(len(df))
+        bars = ax.barh(y_pos, scores, color=colors, height=0.7)
+        
+        # 5. Y 軸標籤 (左側馬名)
+        y_labels = [f"{no}. {name}" for no, name in zip(nos, names)]
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(y_labels, fontsize=12, fontweight='bold')
+        
+        # 6. Bar 內部文字 (騎師 - 練馬師 得分)
+        for bar, score, j, t in zip(bars, scores, jockeys, trainers):
+            width = bar.get_width()
+            label_text = f"{j} - {t}   {score}"
+            
+            # 文字位置：Bar 的右側內部
+            text_x = width - 1 
+            
+            # 如果 Bar 太短，文字放外面；夠長放裡面
+            if width > 20:
+                ax.text(text_x, bar.get_y() + bar.get_height()/2, label_text, 
+                        ha='right', va='center', color='black', fontsize=10, fontweight='bold',
+                        bbox=dict(facecolor='white', alpha=0.4, edgecolor='none', pad=0.5))
+            else:
+                ax.text(width + 1, bar.get_y() + bar.get_height()/2, label_text,
+                        ha='left', va='center', color='black', fontsize=10)
 
-    # 7. 圖表修飾
-    current_date = date_str if date_str else datetime.now(HKT).strftime("%m月%d日")
-    ax.set_title(f"{current_date} 第 {race_num} 場 - 形勢分析圖", fontsize=15, pad=15)
-    ax.set_xlabel("AI 評分 (Score)", fontsize=11)
-    
-    # 網格線
-    ax.grid(axis='x', linestyle='--', alpha=0.5)
-    ax.set_axisbelow(True) # 網格在圖形下方
-    
-    # 範圍與邊框
-    ax.set_xlim(0, 105) # 預留空間給分數
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False) # 左邊框也拿掉，比較乾淨
-    
-    # 背景色 (讓圖表看起來像紙張)
-    fig.patch.set_facecolor('#f8f9fa')
-    ax.set_facecolor('#f8f9fa')
-    
-    plt.tight_layout()
-    return fig
+        # 7. 圖表修飾
+        current_date = date_str if date_str else datetime.now(HKT).strftime("%m月%d日")
+        ax.set_title(f"{current_date} 第 {race_num} 場 - 形勢分析圖", fontsize=16, pad=15, fontweight='bold')
+        ax.set_xlabel("AI 評分 (Score)", fontsize=11)
+        
+        ax.grid(axis='x', linestyle='--', alpha=0.5)
+        ax.set_axisbelow(True)
+        ax.set_xlim(0, 105) 
+        
+        # 去除邊框
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        
+        # 背景色
+        fig.patch.set_facecolor('#f8f9fa')
+        ax.set_facecolor('#f8f9fa')
+        
+        plt.tight_layout()
+        return fig
+    except Exception as e:
+        # 如果出錯，回傳 None 並印出錯誤，避免程式崩潰
+        st.error(f"圖表生成失敗: {e}")
+        return None
 
 # ===================== 2. 數據庫與計算 =====================
 JOCKEY_RANK = { 'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'C Williams': 5.9, '韋紀力': 5.9, 'R Moore': 5.9, '莫雅': 5.9, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'R Kingscote': 3.8, '金美琪': 3.8, 'A Atzeni': 3.7, '艾兆禮': 3.7, 'B Avdulla': 3.7, '艾道拿': 3.7, 'P N Wong': 3.4, '黃寶妮': 3.4, 'T Marquand': 3.3, '馬昆': 3.3, 'H Doyle': 3.3, '杜苑欣': 3.3, 'E C W Wong': 3.2, '黃智弘': 3.2, 'K C Leung': 3.2, '梁家俊': 3.2, 'B Shinn': 3.0, '薛恩': 3.0, 'K Teetan': 2.8, '田泰安': 2.8, 'H Bentley': 2.7, '班德禮': 2.7, 'M F Poon': 2.6, '潘明輝': 2.6, 'C L Chau': 2.4, '周俊樂': 2.4, 'M Chadwick': 2.4, '蔡明紹': 2.4, 'A Badel': 2.4, '巴度': 2.4, 'L Hewitson': 2.3, '希威森': 2.3, 'J Orman': 2.2, '奧文': 2.2, 'K De Melo': 1.9, '董明朗': 1.9, 'M L Yeung': 1.8, '楊明綸': 1.8, 'Y L Chung': 1.8, '鍾易禮': 1.8, 'A Hamelin': 1.7, '賀銘年': 1.7, 'H T Mo': 1.3, '巫顯東': 1.3, 'B Thompson': 0.9, '湯普新': 0.9, 'A Pouchin': 0.8, '普珍宜': 0.8 }
@@ -372,11 +375,13 @@ if app_mode == "📡 實時 (Live)":
             }
         )
 
-        # 3. 顯示視覺化圖表 (新增功能)
+        # 3. 顯示視覺化圖表 (修復版)
         st.markdown("---")
         st.markdown("##### 📊 賽事形勢圖 (Visual Chart)")
         fig = plot_horse_chart(df, selected_race)
-        st.pyplot(fig)
+        if fig:
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig) # 釋放記憶體
         
     else:
         st.info("等待數據輸入...")
@@ -409,10 +414,12 @@ elif app_mode == "📜 歷史 (History)":
         
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
         
-        # 歷史圖表 (新增功能)
+        # 歷史圖表
         st.markdown("---")
         st.markdown("##### 📊 歷史形勢圖")
         fig_hist = plot_horse_chart(df_hist, selected_history_race, date_str=selected_date)
-        st.pyplot(fig_hist)
+        if fig_hist:
+            st.pyplot(fig_hist, use_container_width=True)
+            plt.close(fig_hist)
     else:
         st.info("此場次無數據")
