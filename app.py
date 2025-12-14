@@ -4,57 +4,49 @@ import re
 from datetime import datetime
 
 # ===================== 0. 頁面配置與 CSS 美化 =====================
-# 移除 page_icon 參數，讓它不顯示預設的 emoji
 st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 # 自定義 CSS
 st.markdown("""
 <style>
-    /* 全局字體與背景 */
-    .stApp {
-        background-color: #f8f9fa;
-    }
+    .stApp { background-color: #f8f9fa; }
     
-    /* 主標題容器 */
-    .header-container {
+    /* 標題樣式 */
+    .title-container {
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: baseline; /* 底部對齊 */
         border-bottom: 2px solid #e0e0e0;
         padding-bottom: 15px;
-        margin-bottom: 30px;
+        margin-bottom: 20px;
     }
     
-    /* 左側標題樣式 */
     .main-title {
-        color: #1a237e; /* 深藍色 */
-        font-family: 'Helvetica Neue', sans-serif;
+        color: #1a237e;
+        font-family: sans-serif;
         font-weight: 800;
-        font-size: 2.5em;
+        font-size: 40px; /* 固定字體大小 */
         margin: 0;
     }
     
-    /* 署名樣式 */
     .author-tag {
-        font-size: 0.4em;
-        color: #757575;
+        font-size: 16px;
+        color: #666;
         font-weight: normal;
         margin-left: 10px;
-        vertical-align: middle;
         background-color: #e8eaf6;
         padding: 4px 10px;
-        border-radius: 15px;
+        border-radius: 12px;
+        vertical-align: middle;
     }
     
-    /* 右側副標題樣式 */
     .sub-title {
         color: #5c6bc0;
+        font-size: 20px;
         font-weight: 600;
-        font-size: 1.2em;
-        text-align: right;
     }
     
-    /* 資訊卡片樣式 */
+    /* 資訊卡片 */
     .horse-card {
         background-color: white;
         padding: 20px;
@@ -62,25 +54,16 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         margin-bottom: 15px;
         border-left: 6px solid #1a237e;
-        transition: transform 0.2s;
     }
-    .horse-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 15px rgba(0,0,0,0.1);
-    }
-    
-    /* 高分馬卡片特別樣式 */
     .top-pick-card {
-        background-color: #fffde7; /* 淺黃色背景 */
-        border-left: 6px solid #fbc02d; /* 金色邊框 */
-        border: 1px solid #fff9c4;
+        background-color: #fffde7;
+        border-left: 6px solid #fbc02d;
     }
     
-    /* 數據指標字體 */
-    .metric-label { font-size: 0.85em; color: #757575; text-transform: uppercase; letter-spacing: 0.5px; }
-    .metric-value { font-size: 1.4em; font-weight: 800; color: #333; margin-top: 2px; }
+    .metric-label { font-size: 0.85em; color: #757575; }
+    .metric-value { font-size: 1.4em; font-weight: 800; color: #333; }
     
-    /* 按鈕美化 */
+    /* 按鈕 */
     .stButton>button {
         background-color: #1a237e;
         color: white;
@@ -89,30 +72,19 @@ st.markdown("""
         font-size: 18px;
         font-weight: 600;
         border: none;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     }
-    .stButton>button:hover {
-        background-color: #283593;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-    }
-    
-    /* 連結樣式 */
-    a { text-decoration: none; color: #1565c0; font-weight: 500; }
-    a:hover { text-decoration: underline; }
+    a { text-decoration: none; color: #1565c0; }
 </style>
 """, unsafe_allow_html=True)
 
-# 標題區 (使用 HTML 實現左右佈局)
+# 標題區 (結構更簡單穩固)
 st.markdown("""
-<div class="header-container">
-    <div>
-        <h1 class="main-title">
-            賽馬智腦 <span class="author-tag">By Jay</span>
-        </h1>
+<div class="title-container">
+    <div style="display:flex; align-items:center;">
+        <span class="main-title">賽馬智腦</span>
+        <span class="author-tag">By Jay</span>
     </div>
-    <div class="sub-title">
-        智能賠率追蹤系統
-    </div>
+    <div class="sub-title">智能賠率追蹤系統</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -122,7 +94,7 @@ if 'history_df' not in st.session_state:
 if 'last_update_time' not in st.session_state:
     st.session_state.last_update_time = "尚未更新"
 
-# ===================== 1. 內建資料庫 (維持不變) =====================
+# ===================== 1. 內建資料庫 =====================
 JOCKEY_RANK = {
     'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 
     'C Williams': 5.9, '韋紀力': 5.9, 'R Moore': 5.9, '莫雅': 5.9, 'H Bowman': 4.8, '布文': 4.8, 
@@ -211,7 +183,7 @@ if update_btn and raw_odds:
     current_df = parse_odds_data(raw_odds)
     
     if not current_df.empty:
-        # --- 數據處理 ---
+        # 數據處理
         last_df = st.session_state.history_df
         if not last_df.empty:
             last_odds = last_df[["現價"]].rename(columns={"現價": "上回賠率"})
@@ -237,7 +209,7 @@ if update_btn and raw_odds:
         merged_df["騎師"] = merged_df["騎師"].fillna("未知")
         merged_df["練馬師"] = merged_df["練馬師"].fillna("未知")
 
-        # --- 綜合評分邏輯 ---
+        # 評分
         def calculate_score(row):
             s = 0
             trend = row["真實走勢(%)"]
@@ -258,31 +230,26 @@ if update_btn and raw_odds:
         merged_df["得分"] = merged_df.apply(calculate_score, axis=1)
         merged_df = merged_df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index()
 
-        # --- 美化展示區塊 ---
+        # 展示
         st.markdown(f"### 📈 分析報告 <span style='font-size:0.6em;color:grey;font-weight:normal'>(數據更新於 {st.session_state.last_update_time})</span>", unsafe_allow_html=True)
         
-        # 1. 重點推薦區 (Card View)
+        # 重點推薦區
         top_picks = merged_df[merged_df["得分"] >= 65]
         if not top_picks.empty:
             st.success(f"🔥 AI 鎖定 {len(top_picks)} 匹高勝率重心馬！")
-            
             num_cards = min(len(top_picks), 3)
             cols = st.columns(num_cards)
-            
             for idx, col in enumerate(cols):
                 if idx < len(top_picks):
                     row = top_picks.iloc[idx]
                     with col:
                         trend_val = row["真實走勢(%)"]
                         if trend_val > 0:
-                            trend_color = "#d32f2f" # 紅
-                            trend_arrow = "🔻落飛"
+                            trend_color = "#d32f2f"; trend_arrow = "🔻落飛"
                         elif trend_val < 0:
-                            trend_color = "#388e3c" # 綠
-                            trend_arrow = "🔺回飛"
+                            trend_color = "#388e3c"; trend_arrow = "🔺回飛"
                         else:
-                            trend_color = "#9e9e9e"
-                            trend_arrow = "-"
+                            trend_color = "#9e9e9e"; trend_arrow = "-"
                         
                         st.markdown(f"""
                         <div class="horse-card top-pick-card">
@@ -290,62 +257,37 @@ if update_btn and raw_odds:
                                 <div style="font-size:1.4em; font-weight:bold; color:#1a237e;">
                                     #{row['馬號']} {row['馬名']}
                                 </div>
-                                <div style="background:#fbc02d; color:#fff; padding:2px 8px; border-radius:12px; font-weight:bold; font-size:0.8em;">
-                                    TOP PICK
-                                </div>
+                                <div style="background:#fbc02d; color:#fff; padding:2px 8px; border-radius:12px; font-weight:bold; font-size:0.8em;">TOP PICK</div>
                             </div>
                             <div style="display:flex; justify-content:space-between; margin-bottom:15px;">
-                                <div>
-                                    <div class="metric-label">獨贏賠率</div>
-                                    <div class="metric-value">{row['現價']}</div>
-                                </div>
-                                <div style="text-align:right;">
-                                    <div class="metric-label">AI 綜合分</div>
-                                    <div class="metric-value" style="color:#e65100;">{row['得分']}</div>
-                                </div>
+                                <div><div class="metric-label">獨贏賠率</div><div class="metric-value">{row['現價']}</div></div>
+                                <div style="text-align:right;"><div class="metric-label">AI 綜合分</div><div class="metric-value" style="color:#e65100;">{row['得分']}</div></div>
                             </div>
                             <div style="border-top:1px solid #e0e0e0; padding-top:10px; font-size:0.9em;">
                                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                                    <span style="color:{trend_color}; font-weight:bold; font-size:1.1em;">
-                                        {trend_arrow} {abs(trend_val)}%
-                                    </span>
-                                    <span style="color:#555;">
-                                        {row['騎師']} / {row['練馬師']}
-                                    </span>
+                                    <span style="color:{trend_color}; font-weight:bold; font-size:1.1em;">{trend_arrow} {abs(trend_val)}%</span>
+                                    <span style="color:#555;">{row['騎師']} / {row['練馬師']}</span>
                                 </div>
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
         else:
-            st.info("💡 本場形勢較為平均，暫無超高分心水。建議參考下方列表的落飛馬匹。")
+            st.info("💡 本場形勢較為平均，暫無超高分心水。")
 
-        # 2. 完整列表
+        # 完整列表
         st.markdown("#### 📋 全場形勢總覽")
-        
-        display_df = merged_df[["馬號", "馬名", "現價", "上回賠率", "真實走勢(%)", "騎師", "練馬師", "得分"]].copy()
-        
         st.dataframe(
-            display_df,
+            merged_df[["馬號", "馬名", "現價", "上回賠率", "真實走勢(%)", "騎師", "練馬師", "得分"]],
             use_container_width=True,
             hide_index=True,
             column_config={
                 "馬號": st.column_config.NumberColumn(format="%d", width="small"),
                 "現價": st.column_config.NumberColumn(format="%.1f"),
                 "上回賠率": st.column_config.NumberColumn(format="%.1f"),
-                "真實走勢(%)": st.column_config.NumberColumn(
-                    "實時走勢",
-                    format="%.1f%%",
-                    help="正數(紅色)代表落飛，負數(綠色)代表回飛"
-                ),
-                "得分": st.column_config.ProgressColumn(
-                    "AI 評分",
-                    format="%.1f",
-                    min_value=0,
-                    max_value=100,
-                ),
+                "真實走勢(%)": st.column_config.NumberColumn("實時走勢", format="%.1f%%"),
+                "得分": st.column_config.ProgressColumn("AI 評分", format="%.1f", min_value=0, max_value=100),
             }
         )
-
     else:
         st.error("⚠️ 解析失敗，請確認貼上的內容是否包含正確的賠率格式。")
 
@@ -355,28 +297,5 @@ elif not raw_odds:
     <div style="text-align:center; padding: 60px 20px; color: #757575;">
         <h2 style="color:#1a237e; margin-bottom:10px;">👋 歡迎使用</h2>
         <p style="font-size:1.1em;">請在上方 <b>步驟 1</b> 貼上賠率表，即可開始實時分析。</p>
-        <div style="margin-top:30px; display:flex; justify-content:center; gap:20px;">
-            <div style="background:white; padding:15px; border-radius:8px; width:150px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
-                <div style="font-size:2em;">📉</div>
-                <div style="font-weight:bold; margin-top:5px;">落飛追蹤</div>
-            </div>
-            <div style="background:white; padding:15px; border-radius:8px; width:150px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
-                <div style="font-size:2em;">🏇</div>
-                <div style="font-weight:bold; margin-top:5px;">騎練評級</div>
-            </div>
-            <div style="background:white; padding:15px; border-radius:8px; width:150px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
-                <div style="font-size:2em;">🤖</div>
-                <div style="font-weight:bold; margin-top:5px;">AI 評分</div>
-            </div>
-        </div>
     </div>
     """, unsafe_allow_html=True)
-
-
-
-
-
-
-
-
-
