@@ -1,136 +1,129 @@
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 import re
 from datetime import datetime
-import time
 
-# ===================== 設定 =====================
+# ===================== 頁面設定 =====================
 st.set_page_config(page_title="HKJC分析", layout="wide")
-st.title("🏇 HKJC 落飛分析 (穩定版)")
-count = st_autorefresh(interval=300000, limit=None, key="auto")
+st.title("🏇 HKJC 落飛分析 (萬能文字版)")
+st.caption("解決所有連線失敗問題：直接複製網頁文字貼上即可分析！")
 
-total_races = st.sidebar.number_input("今日場數", 1, 14, 10)
-st.sidebar.write(f"更新: {datetime.now().strftime('%H:%M')}")
+# ===================== 側邊欄 =====================
+st.sidebar.header("設定")
+st.sidebar.info("使用方法：\n1. 用手機打開賠率網頁(馬會/51saima皆可)\n2. 全選文字並複製\n3. 貼在右側輸入框")
 
-# ===================== 核心函數 =====================
-def fetch_race(race_no):
-    url = f"https://www.51saima.com/mobi/odds.jsp?raceNo={race_no}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://www.51saima.com/mobi/index.jsp"
-    }
+# ===================== 萬能解析函數 =====================
+def parse_text(raw_text):
+    """
+    強大的正則表達式解析，能從任何亂七八糟的文字中抓出馬號和賠率
+    """
+    rows = []
+    # 預處理：將所有換行變成空格，方便正則掃描
+    text = raw_text.replace("\n", "  ")
     
-    # 重試 3 次
-    for _ in range(3):
+    # 策略 1: 尋找 "馬號 + 馬名 + 賠率" 的模式
+    # 例如: "1 飛躍精英 12.0" 或 "1. 飛躍精英 12.0"
+    # 正則解釋: 
+    # (\d+)      -> 數字(馬號)
+    # [.\s]+     -> 可能有點或空格
+    # ([\u4e00-\u9fa5]+|[a-zA-Z\s]+) -> 中文或英文馬名
+    # [^\d]+     -> 中間雜訊
+    # (\d+\.\d+) -> 賠率(小數點)
+    
+    # 簡單版正則：只找 "數字 ... 小數點數字"
+    # 我們假設一行裡最靠左的是馬號，最靠右的是賠率
+    
+    lines = raw_text.split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        # 排除掉日期行、場次行
+        if "場" in line and "米" in line: continue
+        
         try:
-            r = requests.get(url, headers=headers, timeout=10)
-            r.encoding = 'utf-8'
-            if r.status_code != 200:
-                time.sleep(1)
-                continue
+            # 找行內所有數字
+            # 例如 "1 飛躍精英 12.0" -> ['1', '12.0']
+            # 例如 "12 飛躍精英 9.9" -> ['12', '9.9']
+            
+            # 使用正則提取所有數字 (包含整數和小數)
+            nums = re.findall(r'\d+\.?\d*', line)
+            
+            if len(nums) >= 2:
+                # 候選馬號：第一個數字
+                no_cand = nums[0]
+                # 候選賠率：最後一個數字 (且必須包含小數點，或者大於等於1.0)
+                odds_cand = nums[-1]
                 
-            soup = BeautifulSoup(r.text, "html.parser")
-            tds = soup.find_all("td")
-            
-            if not tds:
-                time.sleep(1)
-                continue
-
-            rows = []
-            i = 0
-            while i < len(tds) - 2:
-                try:
-                    t1 = tds[i].get_text(strip=True)
-                    t2 = tds[i+1].get_text(strip=True)
-                    t3 = tds[i+2].get_text(strip=True)
+                # 驗證
+                if "." in odds_cand:
+                    horse_no = int(float(no_cand)) # 防止 '1.0' 這種寫法
+                    odds_val = float(odds_cand)
                     
-                    if t1.isdigit():
-                        no = int(t1)
-                        if no > 24: # 過濾異常數字
-                            i += 1
-                            continue
-                            
-                        # 找賠率數字
-                        odds = re.findall(r"\d+\.\d+", t3)
-                        if odds:
-                            rows.append({
-                                "RaceID": race_no,
-                                "HorseNo": no,
-                                "HorseName": t2,
-                                "Odds": float(odds[0])
-                            })
-                except: pass
-                i += 1
-            
-            if rows:
-                df = pd.DataFrame(rows)
-                df = df.drop_duplicates(subset=["HorseNo"], keep="last")
-                if len(df) >= 5: return df
-            time.sleep(1)
-        except:
-            time.sleep(1)
-            
+                    # 過濾異常值
+                    if horse_no > 0 and horse_no <= 24 and odds_val > 0:
+                        # 嘗試抓馬名 (在馬號和賠率中間的文字)
+                        # 這步比較難，我們簡化：直接用 '馬匹N' 代替，或者嘗試去除數字
+                        temp_name = line.replace(no_cand, "", 1).replace(odds_cand, "", 1).strip()
+                        # 清理馬名中的雜點
+                        horse_name = re.sub(r'[^\u4e00-\u9fa5a-zA-Z]', '', temp_name)
+                        if not horse_name: horse_name = f"馬匹 {horse_no}"
+                        
+                        rows.append({
+                            "HorseNo": horse_no,
+                            "HorseName": horse_name,
+                            "Odds": odds_val
+                        })
+        except: pass
+        
+    # 去重 (取最後一次出現的)
+    if rows:
+        df = pd.DataFrame(rows)
+        df = df.drop_duplicates(subset=["HorseNo"], keep="last")
+        return df.sort_values("HorseNo")
+        
     return pd.DataFrame()
 
-# ===================== 主程序 =====================
-if st.button("刷新"): st.rerun()
+# ===================== 主邏輯 =====================
 
-if 'last_df' not in st.session_state:
-    st.session_state.last_df = pd.DataFrame()
+# 連結按鈕
+col_link1, col_link2 = st.columns(2)
+col_link1.link_button("打開 51saima", "https://www.51saima.com/mobi/odds.jsp")
+col_link2.link_button("打開 馬會賠率", "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch")
 
-temp_list = []
-bar = st.progress(0)
-txt = st.empty()
+# 輸入框
+raw_text = st.text_area("在此貼上網頁文字 (Ctrl+V)", height=250, placeholder="請貼上複製的賠率表文字...")
 
-with st.spinner("抓取中..."):
-    for i in range(1, total_races + 1):
-        txt.text(f"讀取第 {i} 場...")
-        df = fetch_race(i)
-        if not df.empty:
-            temp_list.append(df)
-        time.sleep(0.3) # 避免太快
-        bar.progress(i / total_races)
-
-txt.empty()
-bar.empty()
-
-# 這裡就是修正過的地方
-if len(temp_list) > 0:
-    df_all = pd.concat(temp_list, ignore_index=True)
-    st.session_state.last_df = df_all
-    st.success(f"成功更新！共 {len(df_all)} 匹馬。")
-else:
-    if st.session_state.last_df.empty:
-        st.error("無法獲取數據，請稍後再試。")
-    else:
-        st.warning("本次無新數據，顯示舊記錄。")
-
-# 顯示分析
-if not st.session_state.last_df.empty:
-    df_show = st.session_state.last_df.copy()
+if raw_text:
+    df = parse_text(raw_text)
     
-    st.divider()
-    c1, c2 = st.columns(2)
-    mult = c1.slider("變動(%)", 0, 50, 15)
-    thresh = c2.slider("門檻(%)", 0, 30, 5)
-    
-    df_show["Last"] = df_show["Odds"]
-    df_show["First"] = (df_show["Odds"] * (1 + mult/100)).round(1)
-    df_show["Drop"] = ((df_show["First"] - df_show["Last"]) / df_show["First"] * 100).round(1)
-    
-    def sig(row):
-        if row["Last"] <= 10 and row["Drop"] > thresh:
-            return "🔥" if row["First"] > 10 else "✅"
-        return ""
+    if not df.empty:
+        st.success(f"成功識別 {len(df)} 匹馬！")
         
-    df_show["Sig"] = df_show.apply(sig, axis=1)
-    res = df_show[df_show["Sig"] != ""]
-    
-    if not res.empty:
-        res = res.sort_values(by=["RaceID", "HorseNo"])
-        st.dataframe(res, use_container_width=True)
+        st.divider()
+        col1, col2 = st.columns(2)
+        mult = col1.slider("模擬冷熱變動(%)", 0, 50, 15)
+        thresh = col2.slider("落飛門檻(%)", 0, 30, 5)
+        
+        df["Last"] = df["Odds"]
+        df["First"] = (df["Odds"] * (1 + mult/100)).round(1)
+        df["Drop"] = ((df["First"] - df["Last"]) / df["First"] * 100).round(1)
+        
+        def get_sig(row):
+            if row["Last"] <= 10 and row["Drop"] > thresh:
+                return "🔥" if row["First"] > 10 else "✅"
+            return ""
+            
+        df["Sig"] = df.apply(get_sig, axis=1)
+        res = df
+        
+        # 顯示漂亮的表格
+        st.dataframe(
+            res[["HorseNo", "HorseName", "Last", "Drop", "Sig"]]
+            .rename(columns={"Last": "現價", "Drop": "跌幅%", "Sig": "信號"}),
+            use_container_width=True,
+            hide_index=True
+        )
     else:
-        st.info("無落飛馬")
+        st.error("無法識別數據。請確保您複製了包含「馬號」和「賠率」的文字區塊。")
+
