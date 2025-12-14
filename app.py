@@ -4,6 +4,7 @@ import re
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from streamlit_autorefresh import st_autorefresh
 
 # ===================== 0. 全局配置 (極簡化) =====================
 HISTORY_FILE = "race_history.json"
@@ -35,7 +36,7 @@ def get_global_data():
 
 race_storage = get_global_data()
 
-# 常數定義 (移出函數外)
+# 常數定義
 JOCKEY_RANK = { 'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'C Williams': 5.9, '韋紀力': 5.9, 'R Moore': 5.9, '莫雅': 5.9, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'R Kingscote': 3.8, '金美琪': 3.8, 'A Atzeni': 3.7, '艾兆禮': 3.7, 'B Avdulla': 3.7, '艾道拿': 3.7, 'P N Wong': 3.4, '黃寶妮': 3.4, 'T Marquand': 3.3, '馬昆': 3.3, 'H Doyle': 3.3, '杜苑欣': 3.3, 'E C W Wong': 3.2, '黃智弘': 3.2, 'K C Leung': 3.2, '梁家俊': 3.2, 'B Shinn': 3.0, '薛恩': 3.0, 'K Teetan': 2.8, '田泰安': 2.8, 'H Bentley': 2.7, '班德禮': 2.7, 'M F Poon': 2.6, '潘明輝': 2.6, 'C L Chau': 2.4, '周俊樂': 2.4, 'M Chadwick': 2.4, '蔡明紹': 2.4, 'A Badel': 2.4, '巴度': 2.4, 'L Hewitson': 2.3, '希威森': 2.3, 'J Orman': 2.2, '奧文': 2.2, 'K De Melo': 1.9, '董明朗': 1.9, 'M L Yeung': 1.8, '楊明綸': 1.8, 'Y L Chung': 1.8, '鍾易禮': 1.8, 'A Hamelin': 1.7, '賀銘年': 1.7, 'H T Mo': 1.3, '巫顯東': 1.3, 'B Thompson': 0.9, '湯普新': 0.9, 'A Pouchin': 0.8, '普珍宜': 0.8 }
 TRAINER_RANK = { 'J Size': 4.4, '蔡約翰': 4.4, 'K L Man': 4.3, '文家良': 4.3, 'K W Lui': 4.0, '呂健威': 4.0, 'D Eustace': 3.9, '游達榮': 3.9, 'C Fownes': 3.9, '方嘉柏': 3.9, 'P F Yiu': 3.7, '姚本輝': 3.7, 'D A Hayes': 3.7, '大衛希斯': 3.7, 'M Newnham': 3.6, '廖康銘': 3.6, 'W Y So': 3.4, '蘇偉賢': 3.4, 'W K Mo': 3.3, '巫偉傑': 3.3, 'F C Lor': 3.2, '羅富全': 3.2, 'C H Yip': 3.2, '葉楚航': 3.2, 'C S Shum': 3.1, '沈集成': 3.1, 'K H Ting': 3.1, '丁冠豪': 3.1, 'A S Cruz': 3.0, '告東尼': 3.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'Y S Tsui': 2.5, '徐雨石': 2.5, 'J Richards': 2.3, '黎昭昇': 2.3, 'D J Hall': 2.3, '賀賢': 2.3, 'C W Chang': 2.2, '鄭俊偉': 2.2, 'T P Yung': 2.1, '容天鵬': 2.1 }
 
@@ -141,12 +142,11 @@ def get_level(score):
 # ===================== 3. 頁面配置 =====================
 st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
+# CSS 優化：減少渲染負擔
 st.markdown("""
 <style>
     .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
-    section[data-testid="stSidebar"] * { color: #333333 !important; }
-    .home-link { text-decoration: none; color: inherit; cursor: pointer; display: block; }
     .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
     .horse-card { background-color: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; margin-bottom: 8px; }
     .top-pick-card { border-top: 4px solid #c62828; }
@@ -157,8 +157,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.write("DEBUG VERSION 2.0 - LITE MODE")
-
 st.markdown("""
 <div style="border-bottom: 2px solid #1a237e; padding-bottom: 5px; margin-bottom: 10px;">
     <span class="main-title">賽馬智腦</span>
@@ -166,7 +164,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("> 極速版：專注即時數據與評分，移除複雜圖表與動畫以提升速度。")
+st.markdown("> 極速版：專注即時數據與評分，移除複雜圖表以提升速度。")
 
 # ===================== 4. Sidebar =====================
 with st.sidebar:
@@ -195,6 +193,9 @@ with st.sidebar:
                 success, msg = save_daily_history(race_storage)
                 if success: st.success(msg)
                 else: st.warning(msg)
+        # [手動刷新] 移除自動刷新，改為手動，徹底解決卡頓
+        if st.button("🔄 刷新頁面", type="primary", use_container_width=True):
+            st.rerun()
     
     elif app_mode == "📜 歷史 (History)":
         st.divider()
@@ -293,7 +294,6 @@ if app_mode == "📡 實時 (Live)":
                 st.info("無 TOP PICKS")
 
         with tab2:
-            # 直接顯示，不使用 style (速度最快)
             st.dataframe(
                 df[["馬號", "馬名", "現價", "上回", "真實走勢(%)", "騎師", "練馬師", "得分", "信心級別"]],
                 use_container_width=True,
