@@ -42,12 +42,9 @@ def fetch_odds_from_51saima(race_no):
             
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 51saima 的表格結構通常在一個 table 裡
-        # 我們找包含賠率數據的行
         rows = []
         
         # 尋找所有表格行 tr
-        # 注意：這個網站的 HTML 結構可能比較舊式，我們需要寬鬆地解析
         tables = soup.find_all("table")
         
         for table in tables:
@@ -56,7 +53,6 @@ def fetch_odds_from_51saima(race_no):
                 tds = tr.find_all("td")
                 
                 # 有效的賠率行通常至少有 3-4 個格子 (馬號, 馬名, 賠率...)
-                # 且第一個格子是數字 (馬號)
                 if len(tds) >= 3:
                     try:
                         no_txt = tds[0].get_text(strip=True)
@@ -83,7 +79,6 @@ def fetch_odds_from_51saima(race_no):
         return pd.DataFrame(rows)
 
     except Exception as e:
-        # st.error(f"Race {race_no} 抓取錯誤: {e}")
         return pd.DataFrame()
 
 # ===================== 主邏輯 =====================
@@ -118,9 +113,6 @@ if all_races_
     df_all = pd.concat(all_races_data, ignore_index=True)
     st.success(f"成功更新！共抓取 {len(df_all)} 匹馬的賠率。")
     
-    # 顯示原始數據 (可選，除錯用)
-    # st.dataframe(df_all)
-    
     # ===================== 落飛分析展示 =====================
     st.divider()
     st.subheader("📊 即時落飛分析")
@@ -134,7 +126,6 @@ if all_races_
     df_ana = df_all.copy()
     
     # 模擬 5 分鐘前賠率 (因為是單次抓取快照)
-    # 未來您可以把這個 df_all 存到 session_state 裡做真正的時間對比
     df_ana["Odds_Final"] = df_ana["Odds_Current"]
     df_ana["Odds_5min"] = (df_ana["Odds_Current"] * (1 + odds_multiplier/100)).round(1)
     
@@ -143,24 +134,5 @@ if all_races_
     # 篩選落飛馬
     def get_signal(row):
         if row["Odds_Final"] <= 10.0 and row["Drop_Percent"] > drop_thresh:
-            return "🔥 強力落飛" if row["Odds_5min"] > 10.0 else "✅ 一般落飛"
-        return ""
-
-    df_ana["Signal"] = df_ana.apply(get_signal, axis=1)
-    recos = df_ana[df_ana["Signal"] != ""]
-    
-    if not recos.empty:
-        # 依場次排序顯示
-        recos = recos.sort_values(by=["RaceID", "HorseNo"])
-        
-        st.dataframe(
-            recos[["RaceID", "HorseNo", "HorseName", "Odds_Final", "Drop_Percent", "Signal"]]
-            .style.format({"Odds_Final": "{:.1f}", "Drop_Percent": "{:.1f}%"}),
-            use_container_width=True
-        )
-    else:
-        st.info("暫無符合條件的落飛馬匹。")
-
-else:
-    st.warning("未能抓取到任何數據。可能原因：\n1. 網站改版或連線逾時。\n2. 目前時段無賠率數據。")
+            return "🔥 強力落飛" if row["Odds_5m
 
