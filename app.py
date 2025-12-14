@@ -3,11 +3,13 @@ import pandas as pd
 import re
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 0. 全局配置與優化 =====================
 HISTORY_FILE = "race_history.json"
+# 定義香港時區 (UTC+8)
+HKT = timezone(timedelta(hours=8))
 
 # 預先編譯 Regex 以提升效能
 REGEX_INT = re.compile(r'^\d+$')
@@ -35,7 +37,8 @@ def save_daily_history(data_dict):
             try: history_data = json.load(f)
             except: history_data = {}
     
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # 存檔日期也使用香港時間
+    today_str = datetime.now(HKT).strftime("%Y-%m-%d")
     daily_export = {}
     for race_id, race_content in data_dict.items():
         if not race_content["current_df"].empty:
@@ -65,7 +68,7 @@ st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 st.markdown("""
 <style>
-    /* 效能優化：使用系統字體堆疊 */
+    /* 效能優化 */
     .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     
     /* 側邊欄優化 */
@@ -187,7 +190,6 @@ with st.sidebar:
     
     if app_mode == "📡 實時 (Live)":
         st.markdown("### 賽事導航")
-        # 修改這裡：使用 format_func 將數字轉換為 "第 X 場"
         selected_race = st.selectbox("選擇場次", range(1, 15), format_func=lambda x: f"第 {x} 場")
         st.divider()
         st.markdown("### 管理員")
@@ -206,7 +208,6 @@ with st.sidebar:
         history_db = load_history()
         if history_db:
             selected_date = st.selectbox("日期", sorted(history_db.keys(), reverse=True))
-            # 這裡也同步修改成中文顯示
             selected_history_race = st.selectbox("場次", range(1, 15), format_func=lambda x: f"第 {x} 場")
         else:
             st.warning("無紀錄")
@@ -217,7 +218,7 @@ with st.sidebar:
 if app_mode == "📡 實時 (Live)":
     current_race = race_storage[selected_race]
 
-    # [表單系統] 隔離輸入狀態，避免打字卡頓
+    # [表單系統]
     if is_admin:
         with st.expander(f"⚙️ 數據控制台 (第 {selected_race} 場)", expanded=True):
             st.markdown("""
@@ -257,7 +258,8 @@ if app_mode == "📡 實時 (Live)":
                         current_race["current_df"] = df_odds
                         current_race["raw_odds_text"] = new_odds
                         current_race["raw_info_text"] = new_info
-                        current_race["last_update"] = datetime.now().strftime("%H:%M:%S")
+                        # 這裡強制使用 HKT
+                        current_race["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
                         st.success("更新成功！")
                         st.rerun()
                 
@@ -284,7 +286,7 @@ if app_mode == "📡 實時 (Live)":
         df["得分"] = df.apply(calculate_score, axis=1)
         df = df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index()
         
-        st.caption(f"Last Update: {current_race['last_update']}")
+        st.caption(f"Last Update (HKT): {current_race['last_update']}")
         
         # Top Picks
         top_picks = df[df["得分"] >= 65]
