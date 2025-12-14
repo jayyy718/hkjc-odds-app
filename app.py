@@ -5,99 +5,89 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 0. 全局數據共享核心 =====================
-# 這是實現「一人輸入，萬人觀看」的關鍵
-# 我們使用 @st.cache_resource 來創建一個跨用戶的全局容器
-
 @st.cache_resource
 def get_global_data():
-    return {
-        "current_df": pd.DataFrame(),    # 當前數據
-        "last_df": pd.DataFrame(),       # 上一次數據 (用於計算變動)
-        "last_update": "尚未更新",        # 更新時間
-        "raw_odds_text": "",             # 緩存輸入框文字
-        "raw_info_text": ""
-    }
+    data = {}
+    for i in range(1, 15):
+        data[i] = {
+            "current_df": pd.DataFrame(),
+            "last_df": pd.DataFrame(),
+            "last_update": "無數據",
+            "raw_odds_text": "",
+            "raw_info_text": ""
+        }
+    return data
 
-global_data = get_global_data()
+race_storage = get_global_data()
 
 # ===================== 1. 頁面配置與 CSS =====================
-st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide", page_icon="🏇")
+st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #f8f9fa; }
+    .stApp { background-color: #f5f7f9; color: #333; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* 標題樣式 */
+    /* 標題區塊 */
     .title-container {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        border-bottom: 2px solid #e0e0e0;
-        padding-bottom: 15px;
-        margin-bottom: 20px;
+        display: flex; justify-content: space-between; align-items: baseline;
+        border-bottom: 3px solid #1a237e; padding-bottom: 10px; margin-bottom: 20px;
     }
     .main-title {
-        color: #1a237e;
-        font-family: sans-serif;
-        font-weight: 800;
-        font-size: 40px;
-        margin: 0;
+        color: #1a237e; font-weight: 800; font-size: 32px; letter-spacing: 1px;
     }
     .author-tag {
-        font-size: 16px;
-        color: #666;
-        font-weight: normal;
-        margin-left: 10px;
-        background-color: #e8eaf6;
-        padding: 4px 10px;
-        border-radius: 12px;
-        vertical-align: middle;
+        font-size: 14px; color: #fff; background-color: #1a237e; 
+        padding: 4px 12px; border-radius: 4px; margin-left: 10px; 
+        vertical-align: middle; font-weight: 500;
     }
     .sub-title {
-        color: #5c6bc0;
-        font-size: 20px;
-        font-weight: 600;
+        color: #555; font-size: 16px; font-weight: 600; text-transform: uppercase;
     }
     
-    /* 卡片樣式 */
+    /* 專業卡片樣式 */
     .horse-card {
-        background-color: white;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        margin-bottom: 15px;
-        border-left: 6px solid #1a237e;
+        background-color: white; padding: 20px; border-radius: 4px; 
+        border: 1px solid #e0e0e0; border-top: 4px solid #1a237e;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 15px;
     }
     .top-pick-card {
-        background-color: #fffde7;
-        border-left: 6px solid #fbc02d;
+        background-color: #fff; border-top: 4px solid #c62828; /* 紅色頂邊代表重點 */
+        border-left: 1px solid #e0e0e0; border-right: 1px solid #e0e0e0; border-bottom: 1px solid #e0e0e0;
     }
     
-    /* 指標字體 */
-    .metric-label { font-size: 0.85em; color: #757575; }
-    .metric-value { font-size: 1.4em; font-weight: 800; color: #333; }
+    /* 數據標籤 */
+    .metric-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+    .metric-value { font-size: 24px; font-weight: 700; color: #222; font-family: 'Roboto Mono', monospace; }
     
-    /* 按鈕 */
+    /* 狀態標籤 */
+    .status-tag {
+        display: inline-block; padding: 2px 8px; border-radius: 2px; 
+        font-size: 11px; font-weight: bold; text-transform: uppercase;
+    }
+    .tag-drop { background-color: #ffebee; color: #c62828; } /* 落飛紅底紅字 */
+    .tag-rise { background-color: #e8f5e9; color: #2e7d32; } /* 回飛綠底綠字 */
+    .tag-top { background-color: #1a237e; color: white; }    /* 重心藍底白字 */
+    
+    /* 按鈕與連結 */
     .stButton>button {
-        background-color: #1a237e;
-        color: white;
-        border-radius: 8px;
-        height: 55px;
-        font-size: 18px;
-        font-weight: 600;
-        border: none;
+        background-color: #1a237e; color: white; border-radius: 4px; 
+        height: 45px; font-weight: 600; border: none; text-transform: uppercase;
     }
+    .stButton>button:hover { background-color: #283593; }
+    
+    /* 側邊欄優化 */
+    section[data-testid="stSidebar"] { background-color: #fff; border-right: 1px solid #eee; }
 </style>
 """, unsafe_allow_html=True)
 
-# 頁面標題
+# 標題
 st.markdown("""
 <div class="title-container">
-    <div style="display:flex; align-items:center;">
+    <div>
         <span class="main-title">賽馬智腦</span>
         <span class="author-tag">By Jay</span>
     </div>
-    <div class="sub-title">智能賠率追蹤系統 (實時廣播)</div>
+    <div class="sub-title">REAL-TIME ODDS TRACKER</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -115,7 +105,6 @@ JOCKEY_RANK = {
     'Y L Chung': 1.8, '鍾易禮': 1.8, 'A Hamelin': 1.7, '賀銘年': 1.7, 'H T Mo': 1.3, '巫顯東': 1.3, 
     'B Thompson': 0.9, '湯普新': 0.9, 'A Pouchin': 0.8, '普珍宜': 0.8
 }
-
 TRAINER_RANK = {
     'J Size': 4.4, '蔡約翰': 4.4, 'K L Man': 4.3, '文家良': 4.3, 'K W Lui': 4.0, '呂健威': 4.0, 
     'D Eustace': 3.9, '游達榮': 3.9, 'C Fownes': 3.9, '方嘉柏': 3.9, 'P F Yiu': 3.7, '姚本輝': 3.7, 
@@ -126,7 +115,6 @@ TRAINER_RANK = {
     'J Richards': 2.3, '黎昭昇': 2.3, 'D J Hall': 2.3, '賀賢': 2.3, 'C W Chang': 2.2, '鄭俊偉': 2.2, 
     'T P Yung': 2.1, '容天鵬': 2.1
 }
-
 def get_ability_score(name, rank_dict):
     for key in rank_dict:
         if key in name or name in key: return rank_dict[key]
@@ -171,87 +159,84 @@ def parse_info_data(text):
     if rows: return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
     return pd.DataFrame()
 
-# ===================== 4. 管理員控制台 (Sidebar Login) =====================
+# ===================== 4. 側邊欄導航 =====================
 with st.sidebar:
-    st.header("🔐 管理員登入")
-    password = st.text_input("輸入密碼以解鎖編輯", type="password")
-    is_admin = (password == "jay123") # 設定您的密碼
+    st.markdown("### 賽事導航")
+    selected_race = st.selectbox("選擇場次", options=range(1, 15), format_func=lambda x: f"第 {x} 場 (Race {x})")
+    st.divider()
+    
+    st.markdown("### 管理員登入")
+    password = st.text_input("輸入密碼", type="password")
+    is_admin = (password == "jay123")
 
     if is_admin:
-        st.success("✅ 已解鎖：您可以廣播數據")
-    else:
-        st.info("👀 訪客模式：等待數據更新")
-
-    # 每 10 秒自動刷新一次，確保觀眾看到最新數據
+        st.success("已解鎖編輯權限")
+    
     st_autorefresh(interval=10000, key="data_refresher")
 
-# ===================== 5. 數據輸入與發布 (僅管理員可見) =====================
+current_race_data = race_storage[selected_race]
+
+# ===================== 5. 管理員控制台 =====================
 if is_admin:
-    with st.expander("📝 數據控制台 (點擊展開)", expanded=True):
+    with st.expander(f"數據控制台 - 第 {selected_race} 場", expanded=True):
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("### 1. 賠率輸入")
-            st.markdown("[🔗 51saima](https://www.51saima.com/mobi/odds.jsp)")
-            new_odds = st.text_area("賠率表", value=global_data["raw_odds_text"], height=150, key="admin_odds")
+            st.markdown("#### 賠率表來源")
+            new_odds = st.text_area("Odds Input", value=current_race_data["raw_odds_text"], height=150, key=f"odds_{selected_race}")
         with c2:
-            st.markdown("### 2. 排位輸入")
-            st.markdown("[🔗 馬會排位](https://racing.hkjc.com/racing/information/Chinese/racing/RaceCard.aspx)")
-            new_info = st.text_area("排位表", value=global_data["raw_info_text"], height=150, key="admin_info")
+            st.markdown("#### 排位表來源")
+            new_info = st.text_area("Info Input", value=current_race_data["raw_info_text"], height=150, key=f"info_{selected_race}")
         
-        if st.button("🚀 發布更新 (Broadcast)", use_container_width=True):
-            # 解析
-            current_df = parse_odds_data(new_odds)
-            
-            if not current_df.empty:
-                # 處理排位
-                info_df = parse_info_data(new_info) if new_info else pd.DataFrame()
-                
-                if not info_df.empty:
-                    current_df = current_df.join(info_df, how="left")
-                
-                if "騎師" not in current_df.columns:
-                    current_df["騎師"] = "未知"
-                    current_df["練馬師"] = "未知"
-                
-                current_df["騎師"] = current_df["騎師"].fillna("未知")
-                current_df["練馬師"] = current_df["練馬師"].fillna("未知")
-                
-                # 更新全局數據
-                # 將舊的 current 移到 last
-                if not global_data["current_df"].empty:
-                    global_data["last_df"] = global_data["current_df"]
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            if st.button(f"發布第 {selected_race} 場更新", use_container_width=True, type="primary"):
+                df_odds = parse_odds_data(new_odds)
+                if not df_odds.empty:
+                    df_info = parse_info_data(new_info) if new_info else pd.DataFrame()
+                    if not df_info.empty: df_odds = df_odds.join(df_info, how="left")
+                    
+                    for col in ["騎師", "練馬師"]:
+                        if col not in df_odds.columns: df_odds[col] = "未知"
+                        df_odds[col] = df_odds[col].fillna("未知")
+                    
+                    if not current_race_data["current_df"].empty:
+                        current_race_data["last_df"] = current_race_data["current_df"]
+                    else:
+                        current_race_data["last_df"] = df_odds
+                        
+                    current_race_data["current_df"] = df_odds
+                    current_race_data["raw_odds_text"] = new_odds
+                    current_race_data["raw_info_text"] = new_info
+                    current_race_data["last_update"] = datetime.now().strftime("%H:%M:%S")
+                    
+                    st.success("數據已更新")
+                    st.rerun()
                 else:
-                    global_data["last_df"] = current_df # 初始化
-                
-                global_data["current_df"] = current_df
-                global_data["raw_odds_text"] = new_odds
-                global_data["raw_info_text"] = new_info
-                global_data["last_update"] = datetime.now().strftime("%H:%M:%S")
-                
-                st.success("✅ 數據已發布！所有訪客都能看到最新結果。")
+                    st.error("解析失敗")
+        
+        with col_btn2:
+            if st.button(f"清空第 {selected_race} 場", use_container_width=True):
+                race_storage[selected_race] = {
+                    "current_df": pd.DataFrame(), "last_df": pd.DataFrame(),
+                    "last_update": "無數據", "raw_odds_text": "", "raw_info_text": ""
+                }
                 st.rerun()
-            else:
-                st.error("解析失敗，請檢查賠率格式。")
 
-# ===================== 6. 觀眾展示區 (所有人可見) =====================
+# ===================== 6. 分析報告展示 =====================
+st.markdown(f"#### 第 {selected_race} 場賽事分析報告")
 
-if not global_data["current_df"].empty:
-    # 獲取全局數據
-    df = global_data["current_df"].copy()
-    last_df = global_data["last_df"].copy()
+if not current_race_data["current_df"].empty:
+    df = current_race_data["current_df"].copy()
+    last_df = current_race_data["last_df"].copy()
+    update_time = current_race_data["last_update"]
     
-    # 計算變動
-    # 為了方便計算，我們先把 last_df 的 '現價' 改名
     last_odds = last_df[["現價"]].rename(columns={"現價": "上回賠率"})
-    
-    # 合併以計算變動 (必須以當前馬號為主)
     if "上回賠率" not in df.columns:
         df = df.join(last_odds, how="left")
         df["上回賠率"] = df["上回賠率"].fillna(df["現價"])
     
     df["真實走勢(%)"] = ((df["上回賠率"] - df["現價"]) / df["上回賠率"] * 100).fillna(0).round(1)
     
-    # 評分邏輯
     def calculate_score(row):
         s = 0
         trend = row["真實走勢(%)"]
@@ -263,71 +248,65 @@ if not global_data["current_df"].empty:
         if row["現價"] <= 5.0: s += 25
         elif row["現價"] <= 10.0: s += 10
         
-        j_score = get_ability_score(row["騎師"], JOCKEY_RANK)
-        t_score = get_ability_score(row["練馬師"], TRAINER_RANK)
-        s += j_score * 2.5
-        s += t_score * 1.5
+        j = get_ability_score(row["騎師"], JOCKEY_RANK)
+        t = get_ability_score(row["練馬師"], TRAINER_RANK)
+        s += j * 2.5
+        s += t * 1.5
         return round(s, 1)
 
     df["得分"] = df.apply(calculate_score, axis=1)
     df = df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index()
     
-    # --- UI 展示 ---
-    st.markdown(f"### 📈 實時分析報告 <span style='font-size:0.6em;color:grey;font-weight:normal'>(更新於 {global_data['last_update']})</span>", unsafe_allow_html=True)
+    st.caption(f"DATA UPDATED: {update_time}")
     
-    # 卡片視圖
+    # 重心馬卡片
     top_picks = df[df["得分"] >= 65]
     if not top_picks.empty:
-        st.success(f"🔥 AI 鎖定 {len(top_picks)} 匹重心馬！")
+        st.markdown("**重心推薦 TOP PICKS**")
         cols = st.columns(min(len(top_picks), 3))
         for idx, col in enumerate(cols):
             if idx < len(top_picks):
                 row = top_picks.iloc[idx]
                 with col:
-                    trend_val = row["真實走勢(%)"]
-                    if trend_val > 0: c="#d32f2f"; a="🔻落飛"
-                    elif trend_val < 0: c="#388e3c"; a="🔺回飛"
-                    else: c="#9e9e9e"; a="-"
+                    t_val = row["真實走勢(%)"]
+                    if t_val > 0: 
+                        trend_html = f"<span class='status-tag tag-drop'>落飛 {abs(t_val)}%</span>"
+                    elif t_val < 0: 
+                        trend_html = f"<span class='status-tag tag-rise'>回飛 {abs(t_val)}%</span>"
+                    else: 
+                        trend_html = "<span style='color:#999'>-</span>"
                     
                     st.markdown(f"""
                     <div class="horse-card top-pick-card">
-                        <div style="font-size:1.4em; font-weight:bold; color:#1a237e;">#{row['馬號']} {row['馬名']}</div>
-                        <div style="display:flex; justify-content:space-between; margin:10px 0;">
-                            <div><div class="metric-label">獨贏</div><div class="metric-value">{row['現價']}</div></div>
-                            <div style="text-align:right;"><div class="metric-label">得分</div><div class="metric-value" style="color:#e65100;">{row['得分']}</div></div>
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="font-size:18px; font-weight:800; color:#1a237e;">#{row['馬號']} {row['馬名']}</div>
+                            <span class="status-tag tag-top">TOP</span>
                         </div>
-                        <div style="border-top:1px solid #e0e0e0; padding-top:10px;">
-                            <span style="color:{c}; font-weight:bold;">{a} {abs(trend_val)}%</span>
-                            <span style="float:right; color:#555;">{row['騎師']}</span>
+                        <div style="margin:15px 0; display:flex; justify-content:space-between;">
+                            <div><div class="metric-label">ODDS</div><div class="metric-value">{row['現價']}</div></div>
+                            <div style="text-align:right;"><div class="metric-label">SCORE</div><div class="metric-value" style="color:#c62828;">{row['得分']}</div></div>
+                        </div>
+                        <div style="border-top:1px solid #eee; padding-top:8px; font-size:12px; display:flex; justify-content:space-between;">
+                            {trend_html}
+                            <span style="color:#666; font-weight:600;">{row['騎師']} / {row['練馬師']}</span>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
     
-    # 列表視圖
-    st.markdown("#### 📋 全場形勢")
+    # 完整表格
+    st.markdown("**全場形勢 GENERAL OVERVIEW**")
     st.dataframe(
         df[["馬號", "馬名", "現價", "上回賠率", "真實走勢(%)", "騎師", "練馬師", "得分"]],
-        use_container_width=True,
-        hide_index=True,
+        use_container_width=True, hide_index=True,
         column_config={
             "馬號": st.column_config.NumberColumn(format="%d", width="small"),
             "現價": st.column_config.NumberColumn(format="%.1f"),
-            "上回賠率": st.column_config.NumberColumn(format="%.1f"),
-            "真實走勢(%)": st.column_config.NumberColumn("實時走勢", format="%.1f%%"),
-            "得分": st.column_config.ProgressColumn("AI 評分", format="%.1f", min_value=0, max_value=100),
+            "真實走勢(%)": st.column_config.NumberColumn("走勢%", format="%.1f"),
+            "得分": st.column_config.ProgressColumn("評分", format="%.1f", min_value=0, max_value=100)
         }
     )
 
 else:
-    # 等待畫面
-    if not is_admin:
-        st.markdown("""
-        <div style="text-align:center; padding: 80px 20px; color: #757575;">
-            <div style="font-size:3em; margin-bottom:20px;">📡</div>
-            <h2 style="color:#1a237e;">等待賽事數據廣播...</h2>
-            <p style="font-size:1.1em;">管理員尚未發布最新賠率。</p>
-            <p>頁面每 10 秒會自動檢查一次，請保持開啟。</p>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.info("👋 管理員模式：請在上方控制台輸入數據並發布。")
+    st.info(f"等待數據更新 (Status: Waiting for data input - Race {selected_race})")
+    if is_admin:
+        st.write("請在上方控制台輸入並發布數據。")
