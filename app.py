@@ -129,14 +129,14 @@ if raw_odds and raw_info:
     df_info = parse_info_data(raw_info)
     
     if not df_odds.empty and not df_info.empty:
-        # 合併
+        # 合併 (左連接，以賠率表的馬號為主)
         df_final = df_odds.join(df_info, how="left")
         
         # 填補漏抓的
         df_final["騎師"] = df_final["騎師"].fillna("未知")
         df_final["練馬師"] = df_final["練馬師"].fillna("未知")
         
-        # --- 評分邏輯 (保持不變) ---
+        # --- 評分邏輯 ---
         mult = 20
         thresh = 10
         df_final["模擬舊價"] = (df_final["現價"] * (1 + mult/100)).round(1)
@@ -144,26 +144,49 @@ if raw_odds and raw_info:
         
         def score(row):
             s = 0
-            # 資金
+            # A. 資金面 (最高 50)
             if row["跌幅"] >= thresh: s += 40
             if row["現價"] <= 5.0: s += 10
-            # 實力
+            
+            # B. 實力面 (最高 50)
             j = get_ability_score(row["騎師"], JOCKEY_RANK)
             t = get_ability_score(row["練馬師"], TRAINER_RANK)
-            if j >= 9: s += 20
-            elif j >= 8: s += 10
-            if t >= 9: s += 15
-            if j >= 9 and t >= 9: s += 15
+            
+            if j >= 9: s += 20    # 頂級騎師
+            elif j >= 8: s += 10  # 一線騎師
+            
+            if t >= 9: s += 15    # 頂級練馬師
+            
+            if j >= 9 and t >= 9: s += 15 # 夢幻組合加分
+            
             return s
             
         df_final["得分"] = df_final.apply(score, axis=1)
-        df_final = df_final.sort_values("得分", ascending=False)
         
+        # 排序：得分高 -> 賠率低
+        df_final = df_final.sort_values(["得分", "現價"], ascending=[False, True])
+        
+        # 顯示結果
         st.divider()
         st.subheader("📊 分析結果")
-        st.dataframe(df_final[["馬號", "馬名", "騎師", "練馬師", "現價", "得分"]], use_container_width=True)
+        
+        # 關鍵修正：reset_index() 把馬號變回欄位
+        df_display = df_final.reset_index()
+        
+        st.dataframe(
+            df_display[["馬號", "馬名", "騎師", "練馬師", "現價", "得分"]], 
+            use_container_width=True,
+            hide_index=True
+        )
     else:
-        st.error("解析失敗，請確認格式。")
+        st.error("解析失敗，請確認貼上的資料格式是否正確。")
+elif raw_odds:
+    # 只貼了賠率表的情況
+    df_odds = parse_odds_data(raw_odds)
+    if not df_odds.empty:
+        df_display = df_odds.reset_index()
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
 
 
 
