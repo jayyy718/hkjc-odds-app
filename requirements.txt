@@ -2,3 +2,4 @@ streamlit
 streamlit-autorefresh
 pandas
 requests
+beautifulsoup4
