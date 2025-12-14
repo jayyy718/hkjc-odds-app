@@ -3,65 +3,72 @@ import pandas as pd
 import re
 
 st.set_page_config(page_title="HKJC分析", layout="wide")
-st.title("🏇 HKJC 落飛分析 (專用版)")
+st.title("🏇 HKJC 落飛分析 (多行模式)")
+st.caption("支援格式：馬號(換行) -> 馬名(換行) -> 賠率(換行)...")
 
-st.caption("針對排列格式：馬號 | 膽 | 腳 | 馬名 | 獨贏 | 位置")
+raw_text = st.text_area("貼上表格數據：", height=400)
 
-raw_text = st.text_area("貼上表格數據：", height=300)
-
-def parse_special_format(text):
+def parse_multiline_format(text):
     rows = []
-    lines = text.strip().split('\n')
+    # 移除空行，只保留有內容的行
+    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
     
-    for line in lines:
-        # 用空白切割一行
-        parts = re.split(r'\s+', line.strip())
-        
-        # 至少要有 4-5 個部分才算是一行完整的數據
-        # 例如: "1  口  口  飛躍精英  12.0  3.5"
-        if len(parts) < 4:
-            continue
-            
+    # 我們假設數據流是循環的：
+    # 1. 數字 (馬號)
+    # 2. 文字 (馬名)
+    # 3. 數字串 (獨贏 + 位置)
+    
+    i = 0
+    while i < len(lines):
         try:
-            # 1. 抓馬號 (通常是第一個)
-            p_no = parts[0]
-            if not p_no.isdigit(): continue
-            horse_no = int(p_no)
-            if horse_no > 24: continue
+            line1 = lines[i] # 馬號
             
-            # 2. 抓獨贏賠率
-            # 邏輯：從後面數回來
-            # 最後一個 parts[-1] 應該是 位置賠率 (如 3.5)
-            # 倒數第二個 parts[-2] 應該是 獨贏賠率 (如 12.0)
-            
-            # 先找所有像是賠率的數字 (包含小數點)
-            odds_candidates = []
-            for p in parts:
-                clean_p = re.sub(r'[^\d\.]', '', p) # 去除箭頭等符號
-                if re.match(r'^\d+\.\d+$', clean_p):
-                    odds_candidates.append(float(clean_p))
-                elif "SCR" in p: # 退出
-                    odds_candidates.append(0.0)
-            
-            # 如果這一行裡有找到至少兩個賠率 (獨贏 + 位置)
-            if len(odds_candidates) >= 2:
-                # 獨贏通常是「倒數第二個」數字
-                # 位置通常是「倒數第一個」數字
-                # (有些馬可能只有獨贏沒位置，那列表長度可能只有1，要小心)
+            # 判斷 line1 是不是馬號 (純數字)
+            if re.match(r'^\d+$', line1):
+                horse_no = int(line1)
                 
-                win_odds = odds_candidates[-2] # 取倒數第二個
+                # 往後看兩行
+                # 有時候馬名行可能會被跳過或者有多行，所以我們主要找"賠率行"
+                # 賠率行特徵：包含小數點數字 (如 4.9 2.3)
                 
-                # 簡單防呆：如果取到的賠率超級大 (比如不小心抓到投注額)，可能要濾掉
-                # 但賽馬賠率幾百倍都有可能，先不設限
+                # 嘗試找下一行或下兩行哪一個是賠率
+                odds_line = None
                 
-                rows.append({"HorseNo": horse_no, "Odds": win_odds})
-                
-            elif len(odds_candidates) == 1:
-                # 只有一個賠率，那大概率就是獨贏 (或位置沒開盤)
-                rows.append({"HorseNo": horse_no, "Odds": odds_candidates[0]})
+                # 檢查 i+1 行是不是賠率
+                if i+1 < len(lines) and re.search(r'\d+\.?\d*', lines[i+1]):
+                    # 如果 i+1 行包含數字且不像馬名 (通常馬名不含數字)，那它可能是賠率
+                    # 但這裡要小心，有些馬名帶數字。
+                    # 最穩妥是：看它是否包含兩個浮點數
+                    if len(re.findall(r'\d+\.\d+', lines[i+1])) >= 1:
+                         odds_line = lines[i+1]
+                         i += 2 # 跳過 馬號+賠率
+                    else:
+                         # i+1 是馬名，那 i+2 應該是賠率
+                         if i+2 < len(lines):
+                             odds_line = lines[i+2]
+                             i += 3 # 跳過 馬號+馬名+賠率
+                elif i+2 < len(lines):
+                    # i+1 應該是馬名，i+2 是賠率
+                    odds_line = lines[i+2]
+                    i += 3
+                else:
+                    i += 1
+                    continue
+
+                if odds_line:
+                    # 解析賠率行 "4.9   2.3"
+                    # 抓出所有數字
+                    nums = re.findall(r'\d+\.?\d*', odds_line)
+                    
+                    if nums:
+                        # 第一個數字通常是獨贏
+                        win_odds = float(nums[0])
+                        rows.append({"HorseNo": horse_no, "Odds": win_odds})
+            else:
+                i += 1
                 
         except:
-            continue
+            i += 1
             
     if rows:
         df = pd.DataFrame(rows)
@@ -69,14 +76,14 @@ def parse_special_format(text):
     return pd.DataFrame()
 
 if raw_text:
-    df = parse_special_format(raw_text)
+    df = parse_multiline_format(raw_text)
     
     if not df.empty:
-        st.success(f"成功抓到 {len(df)} 隻馬！")
+        st.success(f"成功識別 {len(df)} 隻馬！")
         
-        # 顯示原始抓取結果讓您核對
-        with st.expander("🔍 點擊核對抓到的賠率是否正確"):
-            st.dataframe(df.T) # 轉置顯示比較好對
+        # 顯示核對表格
+        with st.expander("點擊查看抓取明細"):
+            st.write(df)
 
         st.divider()
         c1, c2 = st.columns(2)
@@ -101,6 +108,6 @@ if raw_text:
             hide_index=True
         )
     else:
-        st.error("解析失敗。請確認貼上的文字格式包含馬號和兩個賠率數字。")
+        st.error("解析失敗。請確認複製的順序是：馬號 -> 馬名 -> 賠率。")
 
 
