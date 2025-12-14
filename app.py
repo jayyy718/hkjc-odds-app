@@ -3,18 +3,24 @@ import pandas as pd
 import re
 import json
 import os
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 0. 全局配置與優化 =====================
+# ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
-# 定義香港時區 (UTC+8)
 HKT = timezone(timedelta(hours=8))
 
-# 預先編譯 Regex 以提升效能
+# Regex 預編譯
 REGEX_INT = re.compile(r'^\d+$')
 REGEX_FLOAT = re.compile(r'\d+\.?\d*')
 REGEX_CHN = re.compile(r'[\u4e00-\u9fa5]+')
+
+# --- Matplotlib 中文字體設定 ---
+# 嘗試載入常見的中文字體，解決方塊字問題
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS', 'PingFang HK', 'Heiti TC', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
 
 @st.cache_resource
 def get_global_data():
@@ -29,7 +35,10 @@ def get_global_data():
         }
     return data
 
-# 存檔邏輯
+race_storage = get_global_data()
+
+# ===================== 1. 功能函數 =====================
+
 def save_daily_history(data_dict):
     history_data = {}
     if os.path.exists(HISTORY_FILE):
@@ -37,7 +46,6 @@ def save_daily_history(data_dict):
             try: history_data = json.load(f)
             except: history_data = {}
     
-    # 存檔日期也使用香港時間
     today_str = datetime.now(HKT).strftime("%Y-%m-%d")
     daily_export = {}
     for race_id, race_content in data_dict.items():
@@ -61,61 +69,77 @@ def load_history():
             return json.load(f)
     return {}
 
-race_storage = get_global_data()
+# --- 核心圖表繪製函數 ---
+def plot_horse_chart(df, race_num, date_str=None):
+    # 1. 數據準備：按得分排序 (Matplotlib barh 是從下往上畫，所以要從小到大排，這樣高分才會在上面)
+    df_plot = df.sort_values("得分", ascending=True)
+    
+    names = df_plot["馬名"].tolist()
+    nos = df_plot["馬號"].tolist()
+    scores = df_plot["得分"].tolist()
+    jockeys = df_plot["騎師"].tolist()
+    trainers = df_plot["練馬師"].tolist()
+    
+    # 2. 顏色映射 (紅->黃->綠)
+    # Normalize 分數 0-100 到 0-1
+    norm = mcolors.Normalize(vmin=0, vmax=100)
+    # 使用 RdYlGn (Red-Yellow-Green) 顏色表
+    cmap = plt.get_cmap('RdYlGn')
+    colors = [cmap(norm(s)) for s in scores]
+    
+    # 3. 建立畫布
+    # 高度隨馬匹數量動態調整
+    fig, ax = plt.subplots(figsize=(12, len(df)*0.6 + 1.5))
+    
+    # 4. 繪製水平條形圖
+    y_pos = range(len(df))
+    bars = ax.barh(y_pos, scores, color=colors, height=0.7)
+    
+    # 5. 設定 Y 軸標籤 (馬號. 馬名)
+    y_labels = [f"{no}. {name}" for no, name in zip(nos, names)]
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(y_labels, fontsize=11, fontweight='bold')
+    
+    # 6. 在 Bar 內部加上文字 (參考圖片格式)
+    # 格式: 騎師 - 練馬師  分數
+    for bar, score, j, t in zip(bars, scores, jockeys, trainers):
+        width = bar.get_width()
+        label_text = f"{j} - {t}   {score}"
+        
+        # 根據 Bar 的長度決定文字顏色 (深色背景配白字，淺色配黑字，這裡簡化為黑字加強對比或陰影)
+        # 為了像圖片，我們放在 Bar 內部的右側
+        text_x = width - 1  # 稍微往左縮一點
+        
+        if width > 15: # 如果 bar 夠長才畫在裡面
+            ax.text(text_x, bar.get_y() + bar.get_height()/2, label_text, 
+                    ha='right', va='center', color='black', fontsize=10, fontweight='bold',
+                    bbox=dict(facecolor='white', alpha=0.3, edgecolor='none', pad=1)) # 加一點半透明底色增加可讀性
+        else:
+            # Bar 太短畫在外面
+            ax.text(width + 1, bar.get_y() + bar.get_height()/2, label_text,
+                    ha='left', va='center', color='black', fontsize=10)
 
-# ===================== 1. 頁面與 CSS 優化 =====================
-st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
-
-st.markdown("""
-<style>
-    /* 效能優化 */
-    .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    # 7. 圖表修飾
+    current_date = date_str if date_str else datetime.now(HKT).strftime("%m月%d日")
+    ax.set_title(f"{current_date} 第 {race_num} 場 - 形勢分析圖", fontsize=15, pad=15)
+    ax.set_xlabel("AI 評分 (Score)", fontsize=11)
     
-    /* 側邊欄優化 */
-    section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
-    section[data-testid="stSidebar"] * { color: #333333 !important; }
-
-    /* 標題連結 */
-    .home-link { text-decoration: none; color: inherit; cursor: pointer; display: block; }
-    .home-link:hover .main-title { opacity: 0.8; transition: opacity 0.2s; }
-
-    /* 標題區塊 */
-    .title-container { border-bottom: 3px solid #1a237e; padding-bottom: 10px; margin-bottom: 20px; }
-    .main-title { color: #1a237e; font-weight: 800; font-size: 32px; letter-spacing: 1px; }
-    .author-tag { font-size: 14px; color: #fff; background-color: #1a237e; padding: 4px 12px; border-radius: 4px; margin-left: 10px; vertical-align: middle; }
+    # 網格線
+    ax.grid(axis='x', linestyle='--', alpha=0.5)
+    ax.set_axisbelow(True) # 網格在圖形下方
     
-    /* 卡片與表格 */
-    .horse-card { background-color: white; padding: 15px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 10px; }
-    .top-pick-card { background-color: #fff; border-top: 4px solid #c62828; }
-    .metric-value { font-size: 22px; font-weight: 700; font-family: 'Roboto Mono', monospace; }
+    # 範圍與邊框
+    ax.set_xlim(0, 105) # 預留空間給分數
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False) # 左邊框也拿掉，比較乾淨
     
-    /* 狀態標籤 */
-    .status-tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
-    .tag-drop { background-color: #ffebee; color: #c62828; } 
-    .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
-    .tag-top { background-color: #1a237e; color: white; }    
+    # 背景色 (讓圖表看起來像紙張)
+    fig.patch.set_facecolor('#f8f9fa')
+    ax.set_facecolor('#f8f9fa')
     
-    /* 按鈕優化 */
-    .stButton>button { background-color: #1a237e; color: white; border-radius: 4px; font-weight: 600; border: none; }
-    .stButton>button:hover { background-color: #283593; }
-    
-    /* 連結按鈕 */
-    .source-link { display: inline-block; margin-right: 10px; text-decoration: none; color: #1a237e; font-weight: bold; font-size: 13px; padding: 4px 8px; background-color: #e8eaf6; border-radius: 4px; }
-    
-    /* 表單優化 */
-    .stTextArea textarea { border: 1px solid #bbb !important; }
-</style>
-""", unsafe_allow_html=True)
-
-# 標題 (回首頁功能)
-st.markdown("""
-<div class="title-container">
-    <a href="/" target="_self" class="home-link">
-        <div><span class="main-title">賽馬智腦</span><span class="author-tag">By Jay</span></div>
-        <div style="color: #555; font-size: 16px; font-weight: 600; margin-top:5px;">REAL-TIME ODDS TRACKER</div>
-    </a>
-</div>
-""", unsafe_allow_html=True)
+    plt.tight_layout()
+    return fig
 
 # ===================== 2. 數據庫與計算 =====================
 JOCKEY_RANK = { 'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'C Williams': 5.9, '韋紀力': 5.9, 'R Moore': 5.9, '莫雅': 5.9, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'R Kingscote': 3.8, '金美琪': 3.8, 'A Atzeni': 3.7, '艾兆禮': 3.7, 'B Avdulla': 3.7, '艾道拿': 3.7, 'P N Wong': 3.4, '黃寶妮': 3.4, 'T Marquand': 3.3, '馬昆': 3.3, 'H Doyle': 3.3, '杜苑欣': 3.3, 'E C W Wong': 3.2, '黃智弘': 3.2, 'K C Leung': 3.2, '梁家俊': 3.2, 'B Shinn': 3.0, '薛恩': 3.0, 'K Teetan': 2.8, '田泰安': 2.8, 'H Bentley': 2.7, '班德禮': 2.7, 'M F Poon': 2.6, '潘明輝': 2.6, 'C L Chau': 2.4, '周俊樂': 2.4, 'M Chadwick': 2.4, '蔡明紹': 2.4, 'A Badel': 2.4, '巴度': 2.4, 'L Hewitson': 2.3, '希威森': 2.3, 'J Orman': 2.2, '奧文': 2.2, 'K De Melo': 1.9, '董明朗': 1.9, 'M L Yeung': 1.8, '楊明綸': 1.8, 'Y L Chung': 1.8, '鍾易禮': 1.8, 'A Hamelin': 1.7, '賀銘年': 1.7, 'H T Mo': 1.3, '巫顯東': 1.3, 'B Thompson': 0.9, '湯普新': 0.9, 'A Pouchin': 0.8, '普珍宜': 0.8 }
@@ -182,7 +206,42 @@ def calculate_score(row):
     s += t * 1.5
     return round(s, 1)
 
-# ===================== 3. 側邊欄與導航 =====================
+# ===================== 3. 頁面配置 =====================
+st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
+
+st.markdown("""
+<style>
+    .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
+    section[data-testid="stSidebar"] * { color: #333333 !important; }
+    .home-link { text-decoration: none; color: inherit; cursor: pointer; display: block; }
+    .home-link:hover .main-title { opacity: 0.8; }
+    .title-container { border-bottom: 3px solid #1a237e; padding-bottom: 10px; margin-bottom: 20px; }
+    .main-title { color: #1a237e; font-weight: 800; font-size: 32px; letter-spacing: 1px; }
+    .author-tag { font-size: 14px; color: #fff; background-color: #1a237e; padding: 4px 12px; border-radius: 4px; margin-left: 10px; vertical-align: middle; }
+    .horse-card { background-color: white; padding: 15px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 10px; }
+    .top-pick-card { background-color: #fff; border-top: 4px solid #c62828; }
+    .metric-value { font-size: 22px; font-weight: 700; font-family: 'Roboto Mono', monospace; }
+    .status-tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
+    .tag-drop { background-color: #ffebee; color: #c62828; } 
+    .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
+    .tag-top { background-color: #1a237e; color: white; }    
+    .stButton>button { background-color: #1a237e; color: white; border-radius: 4px; font-weight: 600; border: none; }
+    .source-link { display: inline-block; margin-right: 10px; text-decoration: none; color: #1a237e; font-weight: bold; font-size: 13px; padding: 4px 8px; background-color: #e8eaf6; border-radius: 4px; }
+    .stTextArea textarea { border: 1px solid #bbb !important; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="title-container">
+    <a href="/" target="_self" class="home-link">
+        <div><span class="main-title">賽馬智腦</span><span class="author-tag">By Jay</span></div>
+        <div style="color: #555; font-size: 16px; font-weight: 600; margin-top:5px;">REAL-TIME ODDS TRACKER</div>
+    </a>
+</div>
+""", unsafe_allow_html=True)
+
+# ===================== 4. 主介面邏輯 =====================
 with st.sidebar:
     st.markdown("### 模式 Mode")
     app_mode = st.radio("功能", ["📡 實時 (Live)", "📜 歷史 (History)"], label_visibility="collapsed")
@@ -200,9 +259,7 @@ with st.sidebar:
                 success, msg = save_daily_history(race_storage)
                 if success: st.success(f"已封存: {msg}")
                 else: st.warning(msg)
-        
         st_autorefresh(interval=10000, key="live_refresh")
-        
     else:
         st.markdown("### 檔案 Archive")
         history_db = load_history()
@@ -213,12 +270,9 @@ with st.sidebar:
             st.warning("無紀錄")
             selected_date = None
 
-# ===================== 4. 主介面邏輯 =====================
-
 if app_mode == "📡 實時 (Live)":
     current_race = race_storage[selected_race]
 
-    # [表單系統]
     if is_admin:
         with st.expander(f"⚙️ 數據控制台 (第 {selected_race} 場)", expanded=True):
             st.markdown("""
@@ -230,16 +284,12 @@ if app_mode == "📡 實時 (Live)":
             
             with st.form(key=f"form_race_{selected_race}"):
                 c1, c2 = st.columns(2)
-                with c1:
-                    new_odds = st.text_area("賠率數據", value=current_race["raw_odds_text"], height=120)
-                with c2:
-                    new_info = st.text_area("排位數據", value=current_race["raw_info_text"], height=120)
+                with c1: new_odds = st.text_area("賠率數據", value=current_race["raw_odds_text"], height=120)
+                with c2: new_info = st.text_area("排位數據", value=current_race["raw_info_text"], height=120)
                 
                 col_sub, col_clr = st.columns([1, 1])
-                with col_sub:
-                    submit_val = st.form_submit_button("🚀 發布更新", type="primary", use_container_width=True)
-                with col_clr:
-                    clear_val = st.form_submit_button("🗑️ 清空數據", use_container_width=True)
+                with col_sub: submit_val = st.form_submit_button("🚀 發布更新", type="primary", use_container_width=True)
+                with col_clr: clear_val = st.form_submit_button("🗑️ 清空數據", use_container_width=True)
 
                 if submit_val:
                     df_odds = parse_odds_data(new_odds)
@@ -250,27 +300,19 @@ if app_mode == "📡 實時 (Live)":
                             if col not in df_odds.columns: df_odds[col] = "未知"
                             df_odds[col] = df_odds[col].fillna("未知")
                         
-                        if not current_race["current_df"].empty:
-                            current_race["last_df"] = current_race["current_df"]
-                        else:
-                            current_race["last_df"] = df_odds
+                        if not current_race["current_df"].empty: current_race["last_df"] = current_race["current_df"]
+                        else: current_race["last_df"] = df_odds
                             
                         current_race["current_df"] = df_odds
                         current_race["raw_odds_text"] = new_odds
                         current_race["raw_info_text"] = new_info
-                        # 這裡強制使用 HKT
                         current_race["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
                         st.success("更新成功！")
                         st.rerun()
-                
                 if clear_val:
-                    race_storage[selected_race] = {
-                        "current_df": pd.DataFrame(), "last_df": pd.DataFrame(),
-                        "last_update": "無數據", "raw_odds_text": "", "raw_info_text": ""
-                    }
+                    race_storage[selected_race] = { "current_df": pd.DataFrame(), "last_df": pd.DataFrame(), "last_update": "無數據", "raw_odds_text": "", "raw_info_text": "" }
                     st.rerun()
 
-    # 顯示結果
     st.markdown(f"#### 第 {selected_race} 場 - 分析報告 (Live)")
     
     if not current_race["current_df"].empty:
@@ -288,7 +330,7 @@ if app_mode == "📡 實時 (Live)":
         
         st.caption(f"Last Update (HKT): {current_race['last_update']}")
         
-        # Top Picks
+        # 1. 顯示 Top Picks
         top_picks = df[df["得分"] >= 65]
         if not top_picks.empty:
             st.markdown("**TOP PICKS**")
@@ -298,7 +340,6 @@ if app_mode == "📡 實時 (Live)":
                     row = top_picks.iloc[idx]
                     t_val = row["真實走勢(%)"]
                     trend_html = f"<span class='status-tag tag-drop'>落飛 {abs(t_val)}%</span>" if t_val > 0 else (f"<span class='status-tag tag-rise'>回飛 {abs(t_val)}%</span>" if t_val < 0 else "<span style='color:#999'>-</span>")
-                    
                     with col:
                         st.markdown(f"""
                         <div class="horse-card top-pick-card">
@@ -317,7 +358,7 @@ if app_mode == "📡 實時 (Live)":
                         </div>
                         """, unsafe_allow_html=True)
         
-        # Table
+        # 2. 顯示表格
         st.markdown("**Overview**")
         st.dataframe(
             df[["馬號", "馬名", "現價", "上回", "真實走勢(%)", "騎師", "練馬師", "得分"]],
@@ -330,6 +371,13 @@ if app_mode == "📡 實時 (Live)":
                 "得分": st.column_config.ProgressColumn("評分", format="%.1f", min_value=0, max_value=100)
             }
         )
+
+        # 3. 顯示視覺化圖表 (新增功能)
+        st.markdown("---")
+        st.markdown("##### 📊 賽事形勢圖 (Visual Chart)")
+        fig = plot_horse_chart(df, selected_race)
+        st.pyplot(fig)
+        
     else:
         st.info("等待數據輸入...")
 
@@ -343,6 +391,7 @@ elif app_mode == "📜 歷史 (History)":
         df_hist["得分"] = df_hist.apply(calculate_score, axis=1)
         df_hist = df_hist.sort_values(["得分", "現價"], ascending=[False, True])
         
+        # 歷史 Top Picks
         top_picks = df_hist[df_hist["得分"] >= 65]
         if not top_picks.empty:
             st.markdown("**TOP PICKS (Record)**")
@@ -359,5 +408,11 @@ elif app_mode == "📜 歷史 (History)":
                         """, unsafe_allow_html=True)
         
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
+        
+        # 歷史圖表 (新增功能)
+        st.markdown("---")
+        st.markdown("##### 📊 歷史形勢圖")
+        fig_hist = plot_horse_chart(df_hist, selected_history_race, date_str=selected_date)
+        st.pyplot(fig_hist)
     else:
         st.info("此場次無數據")
