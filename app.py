@@ -9,7 +9,7 @@ from streamlit_autorefresh import st_autorefresh
 # ===================== 0. 全局配置與優化 =====================
 HISTORY_FILE = "race_history.json"
 
-# 預先編譯 Regex 以提升效能 (解決 Lag 的底層優化)
+# 預先編譯 Regex 以提升效能
 REGEX_INT = re.compile(r'^\d+$')
 REGEX_FLOAT = re.compile(r'\d+\.?\d*')
 REGEX_CHN = re.compile(r'[\u4e00-\u9fa5]+')
@@ -65,7 +65,7 @@ st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 st.markdown("""
 <style>
-    /* 效能優化：使用系統字體堆疊，減少加載延遲 */
+    /* 效能優化：使用系統字體堆疊 */
     .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     
     /* 側邊欄優化 */
@@ -99,7 +99,7 @@ st.markdown("""
     /* 連結按鈕 */
     .source-link { display: inline-block; margin-right: 10px; text-decoration: none; color: #1a237e; font-weight: bold; font-size: 13px; padding: 4px 8px; background-color: #e8eaf6; border-radius: 4px; }
     
-    /* 表單優化 (減少 Lag 的關鍵) */
+    /* 表單優化 */
     .stTextArea textarea { border: 1px solid #bbb !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -186,10 +186,11 @@ with st.sidebar:
     st.divider()
     
     if app_mode == "📡 實時 (Live)":
-        st.markdown("### 賽事 Race")
-        selected_race = st.selectbox("選擇場次", range(1, 15), format_func=lambda x: f"Race {x}")
+        st.markdown("### 賽事導航")
+        # 修改這裡：使用 format_func 將數字轉換為 "第 X 場"
+        selected_race = st.selectbox("選擇場次", range(1, 15), format_func=lambda x: f"第 {x} 場")
         st.divider()
-        st.markdown("### Admin")
+        st.markdown("### 管理員")
         password = st.text_input("密碼", type="password")
         is_admin = (password == "jay123")
         if is_admin:
@@ -198,7 +199,6 @@ with st.sidebar:
                 if success: st.success(f"已封存: {msg}")
                 else: st.warning(msg)
         
-        # 只在 Viewer 模式或非編輯狀態下開啟自動刷新，減少干擾
         st_autorefresh(interval=10000, key="live_refresh")
         
     else:
@@ -206,7 +206,8 @@ with st.sidebar:
         history_db = load_history()
         if history_db:
             selected_date = st.selectbox("日期", sorted(history_db.keys(), reverse=True))
-            selected_history_race = st.selectbox("場次", range(1, 15), format_func=lambda x: f"Race {x}")
+            # 這裡也同步修改成中文顯示
+            selected_history_race = st.selectbox("場次", range(1, 15), format_func=lambda x: f"第 {x} 場")
         else:
             st.warning("無紀錄")
             selected_date = None
@@ -216,9 +217,9 @@ with st.sidebar:
 if app_mode == "📡 實時 (Live)":
     current_race = race_storage[selected_race]
 
-    # [優化關鍵] 使用 st.form 隔離輸入狀態，避免打字卡頓
+    # [表單系統] 隔離輸入狀態，避免打字卡頓
     if is_admin:
-        with st.expander(f"⚙️ 數據控制台 (Race {selected_race})", expanded=True):
+        with st.expander(f"⚙️ 數據控制台 (第 {selected_race} 場)", expanded=True):
             st.markdown("""
             <div>
                 <a href="https://www.51saima.com/mobi/odds.jsp" target="_blank" class="source-link">🔗 51saima</a>
@@ -229,17 +230,15 @@ if app_mode == "📡 實時 (Live)":
             with st.form(key=f"form_race_{selected_race}"):
                 c1, c2 = st.columns(2)
                 with c1:
-                    # 使用 current_race 中的暫存文字作為預設值
                     new_odds = st.text_area("賠率數據", value=current_race["raw_odds_text"], height=120)
                 with c2:
                     new_info = st.text_area("排位數據", value=current_race["raw_info_text"], height=120)
                 
-                # 只有按下這個按鈕，Python 才會處理數據，打字時完全不 Lag
                 col_sub, col_clr = st.columns([1, 1])
                 with col_sub:
-                    submit_val = st.form_submit_button("🚀 發布更新 (Update)", type="primary", use_container_width=True)
+                    submit_val = st.form_submit_button("🚀 發布更新", type="primary", use_container_width=True)
                 with col_clr:
-                    clear_val = st.form_submit_button("🗑️ 清空數據 (Clear)", use_container_width=True)
+                    clear_val = st.form_submit_button("🗑️ 清空數據", use_container_width=True)
 
                 if submit_val:
                     df_odds = parse_odds_data(new_odds)
@@ -269,8 +268,8 @@ if app_mode == "📡 實時 (Live)":
                     }
                     st.rerun()
 
-    # 顯示結果 (這部分只讀取 global_data，速度快)
-    st.markdown(f"#### Race {selected_race} 分析報告 (Live)")
+    # 顯示結果
+    st.markdown(f"#### 第 {selected_race} 場 - 分析報告 (Live)")
     
     if not current_race["current_df"].empty:
         df = current_race["current_df"].copy()
@@ -335,14 +334,13 @@ if app_mode == "📡 實時 (Live)":
 elif app_mode == "📜 歷史 (History)":
     if selected_date and str(selected_history_race) in history_db[selected_date]:
         data = history_db[selected_date][str(selected_history_race)]
-        st.markdown(f"#### 📜 {selected_date} - Race {selected_history_race}")
+        st.markdown(f"#### 📜 {selected_date} - 第 {selected_history_race} 場")
         
         df_hist = pd.DataFrame(data["odds_data"])
         if "真實走勢(%)" not in df_hist.columns: df_hist["真實走勢(%)"] = 0.0
         df_hist["得分"] = df_hist.apply(calculate_score, axis=1)
         df_hist = df_hist.sort_values(["得分", "現價"], ascending=[False, True])
         
-        # 歷史顯示邏輯與 Live 相同
         top_picks = df_hist[df_hist["得分"] >= 65]
         if not top_picks.empty:
             st.markdown("**TOP PICKS (Record)**")
