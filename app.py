@@ -1,119 +1,166 @@
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import pandas as pd
-import re
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
 
 # ===================== 頁面設定 =====================
-st.set_page_config(page_title="HKJC 落飛分析 (文字複製版)", layout="wide")
+st.set_page_config(page_title="HKJC 落飛分析 (51saima源)", layout="wide")
 
-st.title("🏇 HKJC 落飛分析 (文字複製版)")
-st.caption("最簡單的方法：直接從馬會網頁複製賠率表貼上即可。")
+st.title("🏇 HKJC 落飛分析 (數據源：51saima)")
+st.caption("每 5 分鐘自動從 51saima.com 更新賠率，繞過馬會封鎖。")
 
-# ===================== 側邊欄 =====================
+# 自動刷新：每 5 分鐘 (300000 ms)
+count = st_autorefresh(interval=300000, limit=None, key="auto-refresh")
+
+# ===================== 側邊欄設定 =====================
 st.sidebar.header("⚙️ 設定")
-race_no = st.sidebar.number_input("場次 (Race)", 1, 14, 1)
+total_races = st.sidebar.number_input("今日總場數", 1, 14, 10)
+st.sidebar.write(f"最後更新: {datetime.now().strftime('%H:%M:%S')}")
 
-# ===================== 核心解析函數 =====================
-def parse_copied_text(raw_text):
+# ===================== 抓取函數 (針對 51saima) =====================
+
+def fetch_odds_from_51saima(race_no):
     """
-    智能解析：從雜亂的複製文字中提取 馬號、馬名、賠率
-    支援格式：
-    1  馬名  10.0
-    2  馬名  5.4
+    從 51saima.com 抓取指定場次的賠率
+    URL pattern: https://www.51saima.com/mobi/odds.jsp?raceNo={race_no}
     """
-    rows = []
-    # 每一行處理
-    lines = raw_text.strip().split('\n')
+    url = f"https://www.51saima.com/mobi/odds.jsp?raceNo={race_no}"
     
-    for line in lines:
-        line = line.strip()
-        if not line: continue
+    # 模擬普通瀏覽器
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.encoding = 'utf-8' # 確保中文不亂碼
         
-        # 嘗試用正則表達式抓取： [數字] [文字] [數字]
-        # 例如: "1 飛躍精英 12.0"
-        # 排除掉 "SCR" (退出馬)
-        if "SCR" in line: continue
-        
-        try:
-            # 模式 A: 簡單的 "1 馬名 9.9"
-            # 匹配：開頭數字(馬號) + 空白 + 中/英文字(馬名) + 空白 + 數字(賠率)
-            match = re.search(r'^(\d+)\s+([^\d]+?)\s+(\d+\.?\d*)$', line)
+        if resp.status_code != 200:
+            return pd.DataFrame()
             
-            # 模式 B: 馬會網頁複製出來的格式，有時賠率會在馬名後面很遠，或者分行
-            # 這裡用一個寬鬆策略：找行內最後一個浮點數當賠率
-            if not match:
-                # 找行內所有數字
-                nums = re.findall(r'\d+\.\d+', line)
-                if nums:
-                    win_odds = float(nums[-1]) # 取最後一個小數當獨贏
-                    # 找馬號 (開頭的數字)
-                    no_match = re.match(r'^(\d+)', line)
-                    if no_match:
-                        horse_no = no_match.group(1)
-                        # 馬名 = 剩下的部分，去掉數字和無效符號
-                        horse_name = line.replace(horse_no, "", 1).replace(str(win_odds), "").strip()
-                        
-                        rows.append({
-                            "HorseNo": horse_no,
-                            "HorseName": horse_name,
-                            "Odds_Current": win_odds
-                        })
-                        continue
-
-            if match:
-                rows.append({
-                    "HorseNo": match.group(1),
-                    "HorseName": match.group(2).strip(),
-                    "Odds_Current": float(match.group(3))
-                })
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # 51saima 的表格結構通常在一個 table 裡
+        # 我們找包含賠率數據的行
+        rows = []
+        
+        # 尋找所有表格行 tr
+        # 注意：這個網站的 HTML 結構可能比較舊式，我們需要寬鬆地解析
+        tables = soup.find_all("table")
+        
+        for table in tables:
+            trs = table.find_all("tr")
+            for tr in trs:
+                tds = tr.find_all("td")
                 
-        except:
-            continue
-            
-    return pd.DataFrame(rows)
+                # 有效的賠率行通常至少有 3-4 個格子 (馬號, 馬名, 賠率...)
+                # 且第一個格子是數字 (馬號)
+                if len(tds) >= 3:
+                    try:
+                        no_txt = tds[0].get_text(strip=True)
+                        name_txt = tds[1].get_text(strip=True)
+                        odds_txt = tds[2].get_text(strip=True)
+                        
+                        # 簡單驗證：馬號必須是數字
+                        if not no_txt.isdigit():
+                            continue
+                            
+                        # 賠率處理：有時會有 "SCR" 或空值
+                        if "SCR" in odds_txt or odds_txt == "":
+                            continue
+                            
+                        rows.append({
+                            "RaceID": race_no,
+                            "HorseNo": int(no_txt),
+                            "HorseName": name_txt,
+                            "Odds_Current": float(odds_txt)
+                        })
+                    except:
+                        continue
+        
+        return pd.DataFrame(rows)
 
-# ===================== 主畫面 =====================
+    except Exception as e:
+        # st.error(f"Race {race_no} 抓取錯誤: {e}")
+        return pd.DataFrame()
 
-st.info("📋 *使用教學*：\n1. 去馬會網頁，全選該場賽事的賠率表 (包含馬號、馬名、獨贏賠率)。\n2. 複製 (Ctrl+C)。\n3. 貼在下方 (Ctrl+V)。")
+# ===================== 主邏輯 =====================
 
-# 提供一個馬會網頁連結方便跳轉
-hkjc_url = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch"
-st.markdown(f"👉 [打開馬會賠率頁]({hkjc_url})")
+st.divider()
 
-raw_text = st.text_area("在此貼上網頁文字：", height=200, placeholder="例如：\n1  飛躍精英  12.0\n2  金鎗六十  1.5\n...")
+if st.button("🔄 立即手動刷新 (或等待自動刷新)"):
+    st.rerun()
 
-if raw_text:
-    df = parse_copied_text(raw_text)
+# 儲存所有場次的數據
+all_races_data = []
+
+# 建立一個進度條
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+with st.spinner("正在從 51saima 抓取全日賠率..."):
+    for r in range(1, total_races + 1):
+        status_text.text(f"正在抓取第 {r} 場...")
+        df_race = fetch_odds_from_51saima(r)
+        
+        if not df_race.empty:
+            all_races_data.append(df_race)
+        
+        # 更新進度條
+        progress_bar.progress(r / total_races)
+
+status_text.text("抓取完成！")
+progress_bar.empty()
+
+if all_races_
+    df_all = pd.concat(all_races_data, ignore_index=True)
+    st.success(f"成功更新！共抓取 {len(df_all)} 匹馬的賠率。")
     
-    if not df.empty:
-        st.success(f"成功識別 {len(df)} 匹馬！")
+    # 顯示原始數據 (可選，除錯用)
+    # st.dataframe(df_all)
+    
+    # ===================== 落飛分析展示 =====================
+    st.divider()
+    st.subheader("📊 即時落飛分析")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        odds_multiplier = st.slider("模擬冷熱變動幅度 (%)", 0, 50, 15)
+    with col2:
+        drop_thresh = st.slider("落飛門檻 (%)", 0, 30, 5)
         
-        # --- 落飛分析邏輯 ---
-        st.divider()
-        st.subheader("📊 分析結果")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            odds_multiplier = st.slider("模擬冷熱變動 (%)", 0, 50, 15)
-        with col2:
-            drop_thresh = st.slider("落飛門檻 (%)", 0, 30, 5)
-            
-        df["Odds_Final"] = df["Odds_Current"]
-        df["Odds_5min"] = (df["Odds_Current"] * (1 + odds_multiplier/100)).round(1)
-        df["Drop_Percent"] = ((df["Odds_5min"] - df["Odds_Final"]) / df["Odds_5min"] * 100).round(1)
-        
-        def get_signal(row):
-            if row["Odds_Final"] <= 10.0 and row["Drop_Percent"] > drop_thresh:
-                return "🔥 強力落飛" if row["Odds_5min"] > 10.0 else "✅ 一般落飛"
-            return ""
+    df_ana = df_all.copy()
+    
+    # 模擬 5 分鐘前賠率 (因為是單次抓取快照)
+    # 未來您可以把這個 df_all 存到 session_state 裡做真正的時間對比
+    df_ana["Odds_Final"] = df_ana["Odds_Current"]
+    df_ana["Odds_5min"] = (df_ana["Odds_Current"] * (1 + odds_multiplier/100)).round(1)
+    
+    df_ana["Drop_Percent"] = ((df_ana["Odds_5min"] - df_ana["Odds_Final"]) / df_ana["Odds_5min"] * 100).round(1)
+    
+    # 篩選落飛馬
+    def get_signal(row):
+        if row["Odds_Final"] <= 10.0 and row["Drop_Percent"] > drop_thresh:
+            return "🔥 強力落飛" if row["Odds_5min"] > 10.0 else "✅ 一般落飛"
+        return ""
 
-        df["Signal"] = df.apply(get_signal, axis=1)
+    df_ana["Signal"] = df_ana.apply(get_signal, axis=1)
+    recos = df_ana[df_ana["Signal"] != ""]
+    
+    if not recos.empty:
+        # 依場次排序顯示
+        recos = recos.sort_values(by=["RaceID", "HorseNo"])
         
-        # 顯示結果
         st.dataframe(
-            df[["HorseNo", "HorseName", "Odds_Final", "Drop_Percent", "Signal"]]
+            recos[["RaceID", "HorseNo", "HorseName", "Odds_Final", "Drop_Percent", "Signal"]]
             .style.format({"Odds_Final": "{:.1f}", "Drop_Percent": "{:.1f}%"}),
             use_container_width=True
         )
-        
     else:
-        st.error("無法識別內容。請試著只複製「表格內容」，不要複製到網頁標題。")
+        st.info("暫無符合條件的落飛馬匹。")
+
+else:
+    st.warning("未能抓取到任何數據。可能原因：\n1. 網站改版或連線逾時。\n2. 目前時段無賠率數據。")
+
