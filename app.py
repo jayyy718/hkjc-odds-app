@@ -178,15 +178,18 @@ st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .stApp { background-color: #f5f7f9; color: #000000 !important; 
+             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
     section[data-testid="stSidebar"] * { color: #333333 !important; }
     .home-link { text-decoration: none; color: inherit; cursor: pointer; display: block; }
     .home-link:hover .main-title { opacity: 0.8; }
-    .title-container { border-bottom: 3px solid #1a237e; padding-bottom: 10px; margin-bottom: 20px; }
+    .title-container { border-bottom: 3px solid #1a237e; padding-bottom: 10px; margin-bottom: 8px; }
     .main-title { color: #1a237e; font-weight: 800; font-size: 32px; letter-spacing: 1px; }
-    .author-tag { font-size: 14px; color: #fff; background-color: #1a237e; padding: 4px 12px; border-radius: 4px; margin-left: 10px; vertical-align: middle; }
-    .horse-card { background-color: white; padding: 15px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 10px; }
+    .author-tag { font-size: 14px; color: #fff; background-color: #1a237e; 
+                  padding: 4px 12px; border-radius: 4px; margin-left: 10px; vertical-align: middle; }
+    .horse-card { background-color: white; padding: 15px; border-radius: 6px; border: 1px solid #ddd; 
+                  border-top: 4px solid #1a237e; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 10px; }
     .top-pick-card { background-color: #fff; border-top: 4px solid #c62828; }
     .metric-value { font-size: 22px; font-weight: 700; font-family: 'Roboto Mono', monospace; }
     .status-tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
@@ -194,7 +197,8 @@ st.markdown("""
     .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
     .tag-top { background-color: #1a237e; color: white; }    
     .stButton>button { background-color: #1a237e; color: white; border-radius: 4px; font-weight: 600; border: none; }
-    .source-link { display: inline-block; margin-right: 10px; text-decoration: none; color: #1a237e; font-weight: bold; font-size: 13px; padding: 4px 8px; background-color: #e8eaf6; border-radius: 4px; }
+    .source-link { display: inline-block; margin-right: 10px; text-decoration: none; color: #1a237e; 
+                   font-weight: bold; font-size: 13px; padding: 4px 8px; background-color: #e8eaf6; border-radius: 4px; }
     .stTextArea textarea { border: 1px solid #bbb !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -208,12 +212,32 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ===================== 4. 主介面邏輯 =====================
+# 簡短 About 區塊（專業感）
+st.markdown(
+    "> 結合即時賠率走勢、騎師與練馬師能力評分，為每匹馬生成 AI 得分，協助實戰玩家快速鎖定值得留意的馬匹。"
+)
+
+# ===================== 4. Sidebar 模式與設定 =====================
 with st.sidebar:
     st.markdown("### 模式 Mode")
-    app_mode = st.radio("功能", ["📡 實時 (Live)", "📜 歷史 (History)"], label_visibility="collapsed")
+    app_mode = st.radio(
+        "功能",
+        ["📡 實時 (Live)", "📜 歷史 (History)", "📈 今日總覽"],
+        label_visibility="collapsed"
+    )
     st.divider()
-    
+
+    # TOP PICKS 門檻設定（全局）
+    st.markdown("### TOP PICKS 設定")
+    top_pick_threshold = st.slider(
+        "TOP PICKS 最低得分",
+        min_value=50,
+        max_value=85,
+        value=65,
+        step=1,
+        help="只有得分達到這個分數或以上的馬，才會顯示在 TOP PICKS 區域。"
+    )
+
     if app_mode == "📡 實時 (Live)":
         st.markdown("### 賽事導航")
         selected_race = st.selectbox("選擇場次", range(1, 15), format_func=lambda x: f"第 {x} 場")
@@ -229,7 +253,7 @@ with st.sidebar:
                 else:
                     st.warning(msg)
         st_autorefresh(interval=10000, key="live_refresh")
-    else:
+    elif app_mode == "📜 歷史 (History)":
         st.markdown("### 檔案 Archive")
         history_db = load_history()
         if history_db:
@@ -238,13 +262,16 @@ with st.sidebar:
         else:
             st.warning("無紀錄")
             selected_date = None
+    else:
+        # 今日總覽模式的 sidebar 不需要額外選項
+        pass
 
 # ============= Live 模式 =============
 if app_mode == "📡 實時 (Live)":
     current_race = race_storage[selected_race]
 
     # 管理員數據輸入
-    if is_admin:
+    if 'is_admin' in locals() and is_admin:
         with st.expander(f"⚙️ 數據控制台 (第 {selected_race} 場)", expanded=True):
             st.markdown("""
             <div>
@@ -312,6 +339,18 @@ if app_mode == "📡 實時 (Live)":
         df["真實走勢(%)"] = ((df["上回"] - df["現價"]) / df["上回"] * 100).fillna(0).round(1)
         df["得分"] = df.apply(calculate_score, axis=1)
         df = df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index()
+
+        # 信心級別
+        def level(score):
+            if score >= 80:
+                return "A"
+            elif score >= 70:
+                return "B"
+            elif score >= 60:
+                return "C"
+            else:
+                return "-"
+        df["信心級別"] = df["得分"].apply(level)
         
         st.caption(f"Last Update (HKT): {current_race['last_update']}")
         
@@ -332,10 +371,10 @@ if app_mode == "📡 實時 (Live)":
             with c3:
                 st.metric("落飛馬匹數量", int(drop_count))
             
-            # Top Picks
-            top_picks = df[df["得分"] >= 65]
+            # Top Picks（使用 sidebar 設定的門檻）
+            top_picks = df[df["得分"] >= top_pick_threshold]
             if not top_picks.empty:
-                st.markdown("**TOP PICKS**")
+                st.markdown(f"**TOP PICKS （門檻：{top_pick_threshold} 分）**")
                 cols = st.columns(min(len(top_picks), 3))
                 for idx, col in enumerate(cols):
                     if idx < len(top_picks):
@@ -351,8 +390,10 @@ if app_mode == "📡 實時 (Live)":
                             st.markdown(f"""
                             <div class="horse-card top-pick-card">
                                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                                    <div style="font-size:18px; font-weight:800; color:#1a237e;">#{row['馬號']} {row['馬名']}</div>
-                                    <span class="status-tag tag-top">TOP</span>
+                                    <div style="font-size:18px; font-weight:800; color:#1a237e;">
+                                        #{row['馬號']} {row['馬名']}
+                                    </div>
+                                    <span class="status-tag tag-top">TOP {row['信心級別']}</span>
                                 </div>
                                 <div style="margin:10px 0; display:flex; justify-content:space-between;">
                                     <div>
@@ -361,24 +402,27 @@ if app_mode == "📡 實時 (Live)":
                                     </div>
                                     <div>
                                         <div class="metric-label" style="text-align:right;">SCORE</div>
-                                        <div class="metric-value" style="color:#c62828; text-align:right;">{row['得分']}</div>
+                                        <div class="metric-value" style="color:#c62828; text-align:right;">
+                                            {row['得分']}
+                                        </div>
                                     </div>
                                 </div>
                                 <div style="font-size:12px; color:#777; margin-top:-5px; margin-bottom:4px;">
                                     {tag_desc}
                                 </div>
-                                <div style="border-top:1px solid #eee; padding-top:8px; font-size:12px; display:flex; justify-content:space-between;">
+                                <div style="border-top:1px solid #eee; padding-top:8px; font-size:12px; 
+                                            display:flex; justify-content:space-between;">
                                     {trend_html}
                                     <span style="color:#666; font-weight:600;">{row['騎師']}</span>
                                 </div>
                             </div>
                             """, unsafe_allow_html=True)
             else:
-                st.info("暫時未有 65 分以上的 TOP PICKS")
+                st.info(f"暫時未有 {top_pick_threshold} 分以上的 TOP PICKS")
 
         with tab2:
             st.markdown("**Overview**")
-            base_df = df[["馬號", "馬名", "現價", "上回", "真實走勢(%)", "騎師", "練馬師", "得分"]]
+            base_df = df[["馬號", "馬名", "現價", "上回", "真實走勢(%)", "騎師", "練馬師", "得分", "信心級別"]]
             styled_df = base_df.style.apply(highlight_row, axis=1)
             st.dataframe(
                 styled_df,
@@ -398,7 +442,7 @@ if app_mode == "📡 實時 (Live)":
 # ============= 歷史模式 =============
 elif app_mode == "📜 歷史 (History)":
     history_db = load_history()
-    if selected_date and history_db and str(selected_history_race) in history_db[selected_date]:
+    if 'selected_date' in locals() and selected_date and history_db and str(selected_history_race) in history_db[selected_date]:
         data = history_db[selected_date][str(selected_history_race)]
         st.markdown(f"#### 📜 {selected_date} - 第 {selected_history_race} 場")
         
@@ -407,6 +451,18 @@ elif app_mode == "📜 歷史 (History)":
             df_hist["真實走勢(%)"] = 0.0
         df_hist["得分"] = df_hist.apply(calculate_score, axis=1)
         df_hist = df_hist.sort_values(["得分", "現價"], ascending=[False, True]).reset_index(drop=True)
+
+        # 信心級別
+        def level(score):
+            if score >= 80:
+                return "A"
+            elif score >= 70:
+                return "B"
+            elif score >= 60:
+                return "C"
+            else:
+                return "-"
+        df_hist["信心級別"] = df_hist["得分"].apply(level)
         
         # 歷史 Summary Cards
         max_h = df_hist.iloc[0]
@@ -417,10 +473,10 @@ elif app_mode == "📜 歷史 (History)":
         with c2:
             st.metric("全場平均評分", f"{avg_s} 分")
         
-        # 歷史 Top Picks (簡版)
-        top_picks = df_hist[df_hist["得分"] >= 65]
+        # 歷史 Top Picks
+        top_picks = df_hist[df_hist["得分"] >= top_pick_threshold]
         if not top_picks.empty:
-            st.markdown("**TOP PICKS (Record)**")
+            st.markdown(f"**TOP PICKS (Record, 門檻：{top_pick_threshold} 分)**")
             cols = st.columns(min(len(top_picks), 3))
             for idx, col in enumerate(cols):
                 if idx < len(top_picks):
@@ -428,16 +484,65 @@ elif app_mode == "📜 歷史 (History)":
                     with col:
                         st.markdown(f"""
                         <div class="horse-card" style="background-color:#f9f9f9; border-top: 4px solid #555;">
-                            <div style="font-weight:bold; color:#333;">#{row['馬號']} {row['馬名']}</div>
+                            <div style="font-weight:bold; color:#333;">
+                                #{row['馬號']} {row['馬名']} (信心 {row['信心級別']})
+                            </div>
                             <div style="font-size:1.2em; font-weight:bold;">
-                                {row['現價']} <span style="font-size:0.8em; color:#c62828;">({row['得分']}分)</span>
+                                {row['現價']} 
+                                <span style="font-size:0.8em; color:#c62828;">({row['得分']}分)</span>
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
         
         st.markdown("**歷史數據**")
-        base_hist = df_hist[["馬號", "馬名", "現價", "真實走勢(%)", "騎師", "練馬師", "得分"]]
+        base_hist = df_hist[["馬號", "馬名", "現價", "真實走勢(%)", "騎師", "練馬師", "得分", "信心級別"]]
         styled_hist = base_hist.style.apply(highlight_row, axis=1)
         st.dataframe(styled_hist, use_container_width=True, hide_index=True)
     else:
         st.info("此場次無數據")
+
+# ============= 今日總覽模式 =============
+elif app_mode == "📈 今日總覽":
+    st.markdown("#### 📈 今日總覽 (All Races Overview)")
+    history_db = load_history()
+    today_str = datetime.now(HKT).strftime("%Y-%m-%d")
+    
+    if today_str in history_db:
+        daily = history_db[today_str]
+        rows = []
+        for race_id in range(1, 15):
+            race_key = str(race_id)
+            if race_key in daily:
+                df_r = pd.DataFrame(daily[race_key]["odds_data"])
+                if df_r.empty:
+                    continue
+                if "真實走勢(%)" not in df_r.columns:
+                    df_r["真實走勢(%)"] = 0.0
+                df_r["得分"] = df_r.apply(calculate_score, axis=1)
+                df_r = df_r.sort_values(["得分", "現價"], ascending=[False, True])
+                top = df_r.iloc[0]
+                top_picks_count = (df_r["得分"] >= top_pick_threshold).sum()
+                rows.append({
+                    "場次": race_id,
+                    "最高評分馬": f"#{top['馬號']} {top['馬名']}",
+                    "最高分": top["得分"],
+                    "平均分": df_r["得分"].mean().round(1),
+                    "TOP PICKS 數量": int(top_picks_count)
+                })
+        if rows:
+            overview_df = pd.DataFrame(rows).sort_values("場次")
+            st.dataframe(
+                overview_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "場次": st.column_config.NumberColumn(format="%d", width="small"),
+                    "最高分": st.column_config.NumberColumn(format="%.1f"),
+                    "平均分": st.column_config.NumberColumn(format="%.1f")
+                }
+            )
+            st.caption(f"TOP PICKS 門檻：{top_pick_threshold} 分")
+        else:
+            st.info("今日尚未有任何封存賽事數據。請在 Live 模式完成賽後使用「封存今日」。")
+    else:
+        st.info("今日尚未封存數據，請先在 Live 模式使用「封存今日」。")
