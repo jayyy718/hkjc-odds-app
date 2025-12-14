@@ -1,51 +1,67 @@
 import streamlit as st
 import pandas as pd
-import io
 import re
 
 st.set_page_config(page_title="HKJC分析", layout="wide")
-st.title("🏇 HKJC 落飛分析 (表格模式)")
+st.title("🏇 HKJC 落飛分析 (專用版)")
 
-st.info("💡 請從網頁複製文字後，貼在下方。如果自動解析不對，請嘗試只複製「馬號、馬名、賠率」這幾欄。")
+st.caption("針對排列格式：馬號 | 膽 | 腳 | 馬名 | 獨贏 | 位置")
 
 raw_text = st.text_area("貼上表格數據：", height=300)
 
-def try_parse_table(text):
+def parse_special_format(text):
     rows = []
     lines = text.strip().split('\n')
     
     for line in lines:
-        # 將一行文字裡的所有連續空白視為分隔符
-        # 例如 "1   飛躍精英    12.0" -> ["1", "飛躍精英", "12.0"]
+        # 用空白切割一行
         parts = re.split(r'\s+', line.strip())
         
-        # 我們嘗試找出這一行裡最有可能是「馬號」和「賠率」的兩個欄位
-        # 策略：
-        # 1. 馬號通常在開頭，是整數 (1-14)
-        # 2. 賠率通常在後面，是浮點數 (如 5.6)，或者是 "SCR"
-        
-        horse_no = None
-        odds = None
-        
-        # 從左邊找馬號
-        for p in parts[:3]: # 只看前三個欄位
-            if p.isdigit() and 1 <= int(p) <= 24:
-                horse_no = int(p)
-                break
+        # 至少要有 4-5 個部分才算是一行完整的數據
+        # 例如: "1  口  口  飛躍精英  12.0  3.5"
+        if len(parts) < 4:
+            continue
+            
+        try:
+            # 1. 抓馬號 (通常是第一個)
+            p_no = parts[0]
+            if not p_no.isdigit(): continue
+            horse_no = int(p_no)
+            if horse_no > 24: continue
+            
+            # 2. 抓獨贏賠率
+            # 邏輯：從後面數回來
+            # 最後一個 parts[-1] 應該是 位置賠率 (如 3.5)
+            # 倒數第二個 parts[-2] 應該是 獨贏賠率 (如 12.0)
+            
+            # 先找所有像是賠率的數字 (包含小數點)
+            odds_candidates = []
+            for p in parts:
+                clean_p = re.sub(r'[^\d\.]', '', p) # 去除箭頭等符號
+                if re.match(r'^\d+\.\d+$', clean_p):
+                    odds_candidates.append(float(clean_p))
+                elif "SCR" in p: # 退出
+                    odds_candidates.append(0.0)
+            
+            # 如果這一行裡有找到至少兩個賠率 (獨贏 + 位置)
+            if len(odds_candidates) >= 2:
+                # 獨贏通常是「倒數第二個」數字
+                # 位置通常是「倒數第一個」數字
+                # (有些馬可能只有獨贏沒位置，那列表長度可能只有1，要小心)
                 
-        # 從右邊找賠率
-        for p in reversed(parts): # 從後面往前找
-            # 移除常見的賠率變動符號 (如 12.0▼)
-            clean_p = re.sub(r'[^\d\.]', '', p)
-            if re.match(r'^\d+\.\d+$', clean_p):
-                odds = float(clean_p)
-                break
-            elif "SCR" in p: # 退出馬
-                odds = 0.0
-                break
-        
-        if horse_no is not None and odds is not None:
-            rows.append({"HorseNo": horse_no, "Odds": odds})
+                win_odds = odds_candidates[-2] # 取倒數第二個
+                
+                # 簡單防呆：如果取到的賠率超級大 (比如不小心抓到投注額)，可能要濾掉
+                # 但賽馬賠率幾百倍都有可能，先不設限
+                
+                rows.append({"HorseNo": horse_no, "Odds": win_odds})
+                
+            elif len(odds_candidates) == 1:
+                # 只有一個賠率，那大概率就是獨贏 (或位置沒開盤)
+                rows.append({"HorseNo": horse_no, "Odds": odds_candidates[0]})
+                
+        except:
+            continue
             
     if rows:
         df = pd.DataFrame(rows)
@@ -53,14 +69,14 @@ def try_parse_table(text):
     return pd.DataFrame()
 
 if raw_text:
-    df = try_parse_table(raw_text)
+    df = parse_special_format(raw_text)
     
     if not df.empty:
-        st.success(f"成功抓到 {len(df)} 隻馬！ (馬號: {df['HorseNo'].min()} - {df['HorseNo'].max()})")
+        st.success(f"成功抓到 {len(df)} 隻馬！")
         
-        # 讓您檢查一下抓對沒
-        with st.expander("點擊檢查抓取結果"):
-            st.dataframe(df)
+        # 顯示原始抓取結果讓您核對
+        with st.expander("🔍 點擊核對抓到的賠率是否正確"):
+            st.dataframe(df.T) # 轉置顯示比較好對
 
         st.divider()
         c1, c2 = st.columns(2)
@@ -72,8 +88,7 @@ if raw_text:
         df["Drop"] = ((df["First"] - df["Last"]) / df["First"] * 100).round(1)
         
         def sig(row):
-            # 排除賠率為 0 的退出馬
-            if row["Last"] == 0: return "🚫 退出"
+            if row["Last"] == 0: return "退出"
             if row["Last"] <= 10 and row["Drop"] > thresh:
                 return "🔥" if row["First"] > 10 else "✅"
             return ""
@@ -86,6 +101,6 @@ if raw_text:
             hide_index=True
         )
     else:
-        st.error("解析失敗。請試著：不要全選網頁，只選取表格那一塊區域複製。")
+        st.error("解析失敗。請確認貼上的文字格式包含馬號和兩個賠率數字。")
 
 
