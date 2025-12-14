@@ -176,6 +176,9 @@ def highlight_row(row):
 # ===================== 3. 頁面配置 =====================
 st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
+st.write("DEBUG VERSION 1.0")
+
+
 st.markdown("""
 <style>
     .stApp { background-color: #f5f7f9; color: #000000 !important; 
