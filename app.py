@@ -3,20 +3,97 @@ import pandas as pd
 import re
 from datetime import datetime
 
-# ===================== 頁面初始化 =====================
-st.set_page_config(page_title="HKJC 實時智能賽馬分析", layout="wide")
-st.title("🏇 HKJC 實時智能賽馬分析系統 (2024/25 數據版)")
-st.caption("功能：實時賠率變動追蹤 + 騎練實力分析 + 2024/25 勝率大數據模型")
+# ===================== 0. 頁面配置與 CSS 美化 =====================
+st.set_page_config(page_title="HKJC 賽馬智腦", layout="wide", page_icon="🏇")
 
-# 初始化 session_state 用來存儲歷史賠率
+# 自定義 CSS
+st.markdown("""
+<style>
+    /* 全局字體與背景 */
+    .stApp {
+        background-color: #f8f9fa;
+    }
+    
+    /* 標題樣式 */
+    h1 {
+        color: #1a237e; /* 深藍色 */
+        font-family: 'Helvetica Neue', sans-serif;
+        font-weight: 700;
+        text-align: center;
+        padding-bottom: 10px;
+        margin-bottom: 30px;
+        border-bottom: 2px solid #e0e0e0;
+    }
+    
+    /* 資訊卡片樣式 */
+    .horse-card {
+        background-color: white;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        margin-bottom: 15px;
+        border-left: 6px solid #1a237e;
+        transition: transform 0.2s;
+    }
+    .horse-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 15px rgba(0,0,0,0.1);
+    }
+    
+    /* 高分馬卡片特別樣式 */
+    .top-pick-card {
+        background-color: #fffde7; /* 淺黃色背景 */
+        border-left: 6px solid #fbc02d; /* 金色邊框 */
+        border: 1px solid #fff9c4;
+    }
+    
+    /* 數據指標字體 */
+    .metric-label { font-size: 0.85em; color: #757575; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-value { font-size: 1.4em; font-weight: 800; color: #333; margin-top: 2px; }
+    .trend-down { color: #d32f2f; font-weight: bold; } /* 跌價紅色 */
+    .trend-up { color: #388e3c; font-weight: bold; }   /* 升價綠色 */
+    
+    /* 按鈕美化 */
+    .stButton>button {
+        background-color: #1a237e;
+        color: white;
+        border-radius: 8px;
+        height: 55px;
+        font-size: 18px;
+        font-weight: 600;
+        border: none;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
+    .stButton>button:hover {
+        background-color: #283593;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+    
+    /* 連結樣式 */
+    a { text-decoration: none; color: #1565c0; font-weight: 500; }
+    a:hover { text-decoration: underline; }
+    
+    /* 表格樣式微調 */
+    div[data-testid="stDataFrame"] {
+        background-color: white;
+        padding: 10px;
+        border-radius: 10px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# 標題區
+st.markdown("<h1>🏇 HKJC 賽馬智腦 <span style='font-size:0.5em;color:#666;vertical-align:middle'>AI Odds Tracker</span></h1>", unsafe_allow_html=True)
+
+# 初始化 session_state
 if 'history_df' not in st.session_state:
     st.session_state.history_df = pd.DataFrame()
 if 'last_update_time' not in st.session_state:
     st.session_state.last_update_time = "尚未更新"
 
-# ===================== 1. 基於真實數據的評分庫 =====================
-# 分數 = (真實勝率 / 25%) * 10，滿分 10 分
-# 數據來源：2024-2025 賽季統計
+# ===================== 1. 內建資料庫 =====================
+# 2024/25 賽季勝率數據校準
 JOCKEY_RANK = {
     'Z Purton': 9.2, '潘頓': 9.2,
     'J McDonald': 8.5, '麥道朗': 8.5,
@@ -52,7 +129,6 @@ JOCKEY_RANK = {
     'A Pouchin': 0.8, '普珍宜': 0.8
 }
 
-# 練馬師勝率較平均，分數差異較小
 TRAINER_RANK = {
     'J Size': 4.4, '蔡約翰': 4.4,
     'K L Man': 4.3, '文家良': 4.3,
@@ -79,210 +155,236 @@ TRAINER_RANK = {
 }
 
 def get_ability_score(name, rank_dict):
-    # 模糊匹配：只要名字包含關鍵字就給分
     for key in rank_dict:
-        if key in name or name in key: 
-            return rank_dict[key]
-    return 2.0 # 預設分數調低，凸顯強者
+        if key in name or name in key: return rank_dict[key]
+    return 2.0
 
-# ===================== 2. 輸入介面 =====================
-c1, c2 = st.columns(2)
+# ===================== 2. 輸入面板 =====================
+with st.container():
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("📊 步驟 1: 貼上賠率")
+        st.markdown("[🔗 點此打開 51saima 賠率頁](https://www.51saima.com/mobi/odds.jsp)")
+        raw_odds = st.text_area("", height=150, key="odds_input", placeholder="全選複製網頁內容 -> 在此貼上...", label_visibility="collapsed")
+    with col2:
+        st.info("📋 步驟 2: 貼上排位 (選填)")
+        st.markdown("[🔗 點此打開馬會排位頁](https://racing.hkjc.com/racing/information/Chinese/racing/RaceCard.aspx)")
+        raw_info = st.text_area("", height=150, key="info_input", placeholder="全選複製排位表 -> 在此貼上...", label_visibility="collapsed")
 
-with c1:
-    st.markdown("### 1️⃣ 賠率輸入 (支援多次更新)")
-    st.link_button("👉 打開 51saima (賠率表)", "https://www.51saima.com/mobi/odds.jsp", use_container_width=True)
-    raw_odds = st.text_area("在此貼上最新賠率：", height=200, key="odds_input", placeholder="全選複製賠率頁面文字 -> 貼上")
-    
-    # 新增一個「更新數據」按鈕
-    update_btn = st.button("🔄 更新賠率並計算變動", type="primary", use_container_width=True)
+    update_btn = st.button("🚀 開始智能分析 / 更新賠率", use_container_width=True)
 
-with c2:
-    st.markdown("### 2️⃣ 排位表 (只貼一次即可)")
-    st.link_button("👉 打開馬會 (排位表)", "https://racing.hkjc.com/racing/information/Chinese/racing/RaceCard.aspx", use_container_width=True)
-    raw_info = st.text_area("在此貼上排位表：", height=200, key="info_input", placeholder="全選複製排位頁面文字 -> 貼上")
-
-# ===================== 3. 核心解析函數 =====================
-
+# ===================== 3. 解析函數 =====================
 def parse_odds_data(text):
-    """解析賠率數據 (支援 51saima 及馬會格式)"""
     rows = []
-    # 移除空行
     lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
     i = 0
     while i < len(lines):
-        # 尋找馬號開頭的行
         if re.match(r'^\d+$', lines[i]):
             try:
                 no = int(lines[i])
                 name = lines[i+1] if i+1 < len(lines) else "未知"
                 win = 0.0
-                
-                # 賠率通常在馬名後的下一行或下兩行
-                # 這裡假設結構：馬號 -> 馬名 -> 賠率
                 if i+2 < len(lines):
-                    # 抓取該行所有小數點數字
                     nums = re.findall(r'\d+\.?\d*', lines[i+2])
-                    if nums: 
-                        win = float(nums[0]) # 取第一個數字作為獨贏
-                
+                    if nums: win = float(nums[0])
                 if win > 0:
                     rows.append({"馬號": no, "馬名": name, "現價": win})
-                    i += 3 # 跳過已處理的行
+                    i += 3
                     continue
             except: pass
         i += 1
-    
-    if rows:
-        return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
+    if rows: return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
     return pd.DataFrame()
 
 def parse_info_data(text):
-    """解析排位表 (抓取騎師與練馬師)"""
     rows = []
     lines = text.strip().split('\n')
     for line in lines:
         parts = line.strip().split()
-        # 有效行通常包含馬號且有多個欄位
         if len(parts) >= 8 and parts[0].isdigit():
             try:
                 no = int(parts[0])
-                # 利用中文詞特徵提取
-                # 預期順序：馬名 -> 騎師 -> 練馬師
                 chn_pattern = re.compile(r'[\u4e00-\u9fa5]+')
                 chn_words = [p for p in parts if chn_pattern.match(p)]
-                
                 if len(chn_words) >= 3:
-                    rows.append({
-                        "馬號": no,
-                        "騎師": chn_words[1],
-                        "練馬師": chn_words[2]
-                    })
+                    rows.append({"馬號": no, "騎師": chn_words[1], "練馬師": chn_words[2]})
             except: continue
-            
-    if rows:
-        return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
+    if rows: return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
     return pd.DataFrame()
 
-# ===================== 4. 主邏輯與評分模型 =====================
-
+# ===================== 4. 分析與結果展示 =====================
 if update_btn and raw_odds:
-    # 1. 解析當前賠率
     current_df = parse_odds_data(raw_odds)
     
     if not current_df.empty:
-        # 2. 處理歷史數據 (實時變動計算)
+        # --- 數據處理 ---
         last_df = st.session_state.history_df
-        
         if not last_df.empty:
-            # 有歷史數據 -> 進行合併與比對
             last_odds = last_df[["現價"]].rename(columns={"現價": "上回賠率"})
             merged_df = current_df.join(last_odds, how="left")
-            # 填補缺失值 (若無上回賠率，則設為當前賠率)
             merged_df["上回賠率"] = merged_df["上回賠率"].fillna(merged_df["現價"])
         else:
-            # 無歷史數據 -> 初始化
             merged_df = current_df
             merged_df["上回賠率"] = merged_df["現價"]
-        
-        # 計算真實變動 % (正數=落飛/跌價, 負數=回飛/升價)
+            
         merged_df["真實走勢(%)"] = ((merged_df["上回賠率"] - merged_df["現價"]) / merged_df["上回賠率"] * 100).fillna(0).round(1)
-        
-        # 更新 Session State
         st.session_state.history_df = current_df
         st.session_state.last_update_time = datetime.now().strftime("%H:%M:%S")
         
-        # 3. 結合排位表資訊
         if raw_info:
             df_info = parse_info_data(raw_info)
             if not df_info.empty:
                 merged_df = merged_df.join(df_info, how="left")
-                merged_df["騎師"] = merged_df["騎師"].fillna("未知")
-                merged_df["練馬師"] = merged_df["練馬師"].fillna("未知")
-            else:
-                merged_df["騎師"] = "未知"
-                merged_df["練馬師"] = "未知"
-        else:
+        
+        if "騎師" not in merged_df.columns:
             merged_df["騎師"] = "未知"
             merged_df["練馬師"] = "未知"
+            
+        merged_df["騎師"] = merged_df["騎師"].fillna("未知")
+        merged_df["練馬師"] = merged_df["練馬師"].fillna("未知")
 
-        # 4. 綜合評分 (核心演算法)
+        # --- 綜合評分邏輯 ---
         def calculate_score(row):
             s = 0
-            
-            # A. 走勢面 (基於真實變動)
             trend = row["真實走勢(%)"]
-            if trend >= 15: s += 50      # 巨幅落飛
-            elif trend >= 10: s += 35    # 大幅落飛
-            elif trend >= 5: s += 20     # 明顯落飛
-            elif trend <= -10: s -= 20   # 大幅回飛 (扣分)
+            # 走勢權重
+            if trend >= 15: s += 50
+            elif trend >= 10: s += 35
+            elif trend >= 5: s += 20
+            elif trend <= -10: s -= 20
             
-            # B. 賠率面 (基於勝率統計)
-            # 5倍以下勝率極高(27%)
+            # 賠率權重 (基於大數據勝率)
             if row["現價"] <= 5.0: s += 25
             elif row["現價"] <= 10.0: s += 10
             
-            # C. 實力面 (基於騎練排名)
+            # 實力權重
             j_score = get_ability_score(row["騎師"], JOCKEY_RANK)
             t_score = get_ability_score(row["練馬師"], TRAINER_RANK)
-            
-            # 騎師權重較高 (2.5倍)
             s += j_score * 2.5
-            # 練馬師權重 (1.5倍)
             s += t_score * 1.5
-            
             return round(s, 1)
 
         merged_df["得分"] = merged_df.apply(calculate_score, axis=1)
-        
-        # 5. 視覺化格式設定
-        def format_trend(val):
-            if val > 0: return f"🔻跌 {abs(val)}%" # 紅色跌價(好事)
-            if val < 0: return f"🔺升 {abs(val)}%" # 綠色升價(壞事)
-            return "-"
-            
-        merged_df["走勢提示"] = merged_df["真實走勢(%)"].apply(format_trend)
-        
-        # 排序：得分優先 -> 賠率次之
-        merged_df = merged_df.sort_values(["得分", "現價"], ascending=[False, True])
-        
-        # 重置索引以便顯示
-        df_display = merged_df.reset_index()
+        merged_df = merged_df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index()
 
-        # ===================== 5. 結果顯示 =====================
-        st.divider()
-        st.subheader(f"📊 實時分析報告 (最後更新: {st.session_state.last_update_time})")
+        # --- 美化展示區塊 ---
+        st.markdown(f"### 📈 分析報告 <span style='font-size:0.6em;color:grey;font-weight:normal'>(數據更新於 {st.session_state.last_update_time})</span>", unsafe_allow_html=True)
         
-        # 高亮顯示高分馬 (得分 >= 65)
-        top_picks = df_display[df_display["得分"] >= 65]
-        
+        # 1. 重點推薦區 (Card View)
+        top_picks = merged_df[merged_df["得分"] >= 65]
         if not top_picks.empty:
-            st.success(f"🔥 發現 {len(top_picks)} 匹高勝率推薦馬！")
-            st.dataframe(
-                top_picks[["馬號", "馬名", "現價", "上回賠率", "走勢提示", "騎師", "練馬師", "得分"]],
-                use_container_width=True,
-                hide_index=True
-            )
+            st.success(f"🔥 AI 鎖定 {len(top_picks)} 匹高勝率重心馬！")
+            
+            # 依數量動態決定每行顯示幾張卡片 (最多3)
+            num_cards = min(len(top_picks), 3)
+            cols = st.columns(num_cards)
+            
+            for idx, col in enumerate(cols):
+                if idx < len(top_picks):
+                    row = top_picks.iloc[idx]
+                    with col:
+                        # 判斷走勢顏色與箭頭
+                        trend_val = row["真實走勢(%)"]
+                        if trend_val > 0:
+                            trend_color = "#d32f2f" # 紅
+                            trend_arrow = "🔻落飛"
+                        elif trend_val < 0:
+                            trend_color = "#388e3c" # 綠
+                            trend_arrow = "🔺回飛"
+                        else:
+                            trend_color = "#9e9e9e"
+                            trend_arrow = "-"
+                        
+                        # 卡片 HTML
+                        st.markdown(f"""
+                        <div class="horse-card top-pick-card">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                <div style="font-size:1.4em; font-weight:bold; color:#1a237e;">
+                                    #{row['馬號']} {row['馬名']}
+                                </div>
+                                <div style="background:#fbc02d; color:#fff; padding:2px 8px; border-radius:12px; font-weight:bold; font-size:0.8em;">
+                                    TOP PICK
+                                </div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-bottom:15px;">
+                                <div>
+                                    <div class="metric-label">獨贏賠率</div>
+                                    <div class="metric-value">{row['現價']}</div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div class="metric-label">AI 綜合分</div>
+                                    <div class="metric-value" style="color:#e65100;">{row['得分']}</div>
+                                </div>
+                            </div>
+                            <div style="border-top:1px solid #e0e0e0; padding-top:10px; font-size:0.9em;">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span style="color:{trend_color}; font-weight:bold; font-size:1.1em;">
+                                        {trend_arrow} {abs(trend_val)}%
+                                    </span>
+                                    <span style="color:#555;">
+                                        {row['騎師']} / {row['練馬師']}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
         else:
-            st.info("目前形勢較為平均，暫無超高分心水，建議觀察「走勢提示」尋找落飛馬。")
-        
-        # 實時落飛警報 (獨立於得分)
-        drops = df_display[df_display["真實走勢(%)"] >= 5]
-        if not drops.empty:
-            st.warning(f"🚨 資金流警報：{', '.join(drops['馬名'].tolist())} 出現顯著落飛！")
+            st.info("💡 本場形勢較為平均，暫無超高分心水。建議參考下方列表的落飛馬匹。")
 
-        # 完整列表 (放在折疊區塊保持整潔)
-        with st.expander("點擊查看全場詳細數據", expanded=True):
-            st.dataframe(
-                df_display[["馬號", "馬名", "現價", "上回賠率", "走勢提示", "騎師", "練馬師", "得分"]],
-                use_container_width=True,
-                hide_index=True
-            )
+        # 2. 完整列表 (Dataframe with formatting)
+        st.markdown("#### 📋 全場形勢總覽")
+        
+        display_df = merged_df[["馬號", "馬名", "現價", "上回賠率", "真實走勢(%)", "騎師", "練馬師", "得分"]].copy()
+        
+        # 使用 Streamlit 的 column_config 美化表格
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "馬號": st.column_config.NumberColumn(format="%d", width="small"),
+                "現價": st.column_config.NumberColumn(format="%.1f"),
+                "上回賠率": st.column_config.NumberColumn(format="%.1f"),
+                "真實走勢(%)": st.column_config.NumberColumn(
+                    "實時走勢",
+                    format="%.1f%%",
+                    help="正數(落飛)為紅色，負數(回飛)為綠色"
+                ),
+                "得分": st.column_config.ProgressColumn(
+                    "AI 評分",
+                    format="%.1f",
+                    min_value=0,
+                    max_value=100,
+                ),
+            }
+        )
 
     else:
-        st.error("賠率表解析失敗，請確認複製內容包含馬號、馬名及賠率數據。")
+        st.error("⚠️ 解析失敗，請確認貼上的內容是否包含正確的賠率格式。")
 
 elif not raw_odds:
-    st.info("👋 請在左側貼上賠率表並按下「更新」按鈕開始分析。")
+    # 歡迎畫面
+    st.markdown("""
+    <div style="text-align:center; padding: 60px 20px; color: #757575;">
+        <h2 style="color:#1a237e; margin-bottom:10px;">👋 歡迎使用賽馬智腦</h2>
+        <p style="font-size:1.1em;">請在上方 <b>步驟 1</b> 貼上賠率表，即可開始實時分析。</p>
+        <div style="margin-top:30px; display:flex; justify-content:center; gap:20px;">
+            <div style="background:white; padding:15px; border-radius:8px; width:150px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
+                <div style="font-size:2em;">📉</div>
+                <div style="font-weight:bold; margin-top:5px;">落飛追蹤</div>
+            </div>
+            <div style="background:white; padding:15px; border-radius:8px; width:150px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
+                <div style="font-size:2em;">🏇</div>
+                <div style="font-weight:bold; margin-top:5px;">騎練評級</div>
+            </div>
+            <div style="background:white; padding:15px; border-radius:8px; width:150px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
+                <div style="font-size:2em;">🤖</div>
+                <div style="font-weight:bold; margin-top:5px;">AI 評分</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 
 
