@@ -4,11 +4,9 @@ import re
 import json
 import os
 import matplotlib
-# 強制使用 Agg 後端
-matplotlib.use('Agg')
+matplotlib.use('Agg') # Force non-interactive backend
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import io  # 新增：用於處理圖片流
+import io
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
@@ -20,8 +18,8 @@ REGEX_INT = re.compile(r'^\d+$')
 REGEX_FLOAT = re.compile(r'\d+\.?\d*')
 REGEX_CHN = re.compile(r'[\u4e00-\u9fa5]+')
 
-# 字體設定
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'WenQuanYi Micro Hei', 'sans-serif']
+# 簡化字體設定，避免字體錯誤
+plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
 @st.cache_resource
@@ -40,30 +38,31 @@ def get_global_data():
 race_storage = get_global_data()
 
 # ===================== 1. 功能函數 =====================
-
 def save_daily_history(data_dict):
-    history_data = {}
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            try: history_data = json.load(f)
-            except: history_data = {}
-    
-    today_str = datetime.now(HKT).strftime("%Y-%m-%d")
-    daily_export = {}
-    for race_id, race_content in data_dict.items():
-        if not race_content["current_df"].empty:
-            daily_export[str(race_id)] = {
-                "odds_data": race_content["current_df"].to_dict(orient="records"),
-                "raw_odds": race_content["raw_odds_text"],
-                "raw_info": race_content["raw_info_text"],
-                "update_time": race_content["last_update"]
-            }
-    if daily_export:
-        history_data[today_str] = daily_export
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history_data, f, ensure_ascii=False, indent=4)
-        return True, today_str
-    return False, "無數據"
+    try:
+        history_data = {}
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                history_data = json.load(f)
+        
+        today_str = datetime.now(HKT).strftime("%Y-%m-%d")
+        daily_export = {}
+        for race_id, race_content in data_dict.items():
+            if not race_content["current_df"].empty:
+                daily_export[str(race_id)] = {
+                    "odds_data": race_content["current_df"].to_dict(orient="records"),
+                    "raw_odds": race_content["raw_odds_text"],
+                    "raw_info": race_content["raw_info_text"],
+                    "update_time": race_content["last_update"]
+                }
+        if daily_export:
+            history_data[today_str] = daily_export
+            with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(history_data, f, ensure_ascii=False, indent=4)
+            return True, today_str
+        return False, "無數據"
+    except Exception as e:
+        return False, str(e)
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -71,72 +70,48 @@ def load_history():
             return json.load(f)
     return {}
 
-# --- [核心] 圖表繪製函數 (圖片版) ---
-def plot_horse_chart_as_image(df, race_num, date_str=None):
-    if df.empty: return None
+# --- [圖表核心] 極簡化繪圖函數 ---
+def plot_chart_debug(df, race_num):
+    # 這裡會印出狀態，讓您知道程式有沒有跑進來
+    print(f"DEBUG: Starting plot for Race {race_num}")
+    
+    if df is None or df.empty:
+        st.error("❌ 錯誤：傳入的數據表為空 (Empty DataFrame)")
+        return None
 
     try:
-        # 1. 強制數據轉換 (防止數據格式錯誤導致圖表空白)
+        # 1. 數據轉換 (非常嚴格的清洗)
         df_plot = df.copy()
+        # 強制轉字串，避免任何非文字導致的錯誤
+        df_plot["馬名"] = df_plot["馬名"].astype(str)
+        # 強制轉數字，無法轉的變 0
         df_plot["得分"] = pd.to_numeric(df_plot["得分"], errors='coerce').fillna(0)
         df_plot = df_plot.sort_values("得分", ascending=True)
-        
-        names = df_plot["馬名"].astype(str).tolist()
-        nos = df_plot["馬號"].astype(str).tolist()
-        scores = df_plot["得分"].tolist()
-        jockeys = df_plot["騎師"].astype(str).tolist()
-        trainers = df_plot["練馬師"].astype(str).tolist()
-        
-        # 2. 顏色
-        norm = mcolors.Normalize(vmin=0, vmax=100)
-        cmap = plt.get_cmap('RdYlGn')
-        colors = [cmap(norm(s)) for s in scores]
-        
-        # 3. 畫布
-        fig, ax = plt.subplots(figsize=(10, len(df)*0.6 + 1.5))
-        
-        # 4. 繪製
-        y_pos = range(len(df))
-        bars = ax.barh(y_pos, scores, color=colors, height=0.7)
-        
-        # 5. Y軸
-        y_labels = [f"{no}. {name}" for no, name in zip(nos, names)]
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels(y_labels, fontsize=12, fontweight='bold')
-        
-        # 6. Bar 內部文字
-        for bar, score, j, t in zip(bars, scores, jockeys, trainers):
-            width = bar.get_width()
-            label_text = f"{j}-{t} {score}"
-            if width > 20:
-                ax.text(width - 1, bar.get_y() + bar.get_height()/2, label_text, 
-                        ha='right', va='center', color='black', fontsize=10, fontweight='bold')
-            else:
-                ax.text(width + 1, bar.get_y() + bar.get_height()/2, label_text,
-                        ha='left', va='center', color='black', fontsize=10)
 
-        # 7. 修飾
-        date_display = date_str if date_str else datetime.now(HKT).strftime("%m-%d")
-        ax.set_title(f"Race {race_num} Analysis ({date_display})", fontsize=16, pad=15)
-        ax.set_xlabel("AI Score", fontsize=11)
-        ax.set_xlim(0, 105)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        names = df_plot["馬名"].tolist()
+        scores = df_plot["得分"].tolist()
+
+        # 2. 最簡單的繪圖
+        fig, ax = plt.subplots(figsize=(8, 6))
         
-        fig.patch.set_facecolor('#f8f9fa')
-        ax.set_facecolor('#f8f9fa')
+        # 使用最基本的 barh，不加顏色映射
+        ax.barh(names, scores, color='skyblue')
         
-        plt.tight_layout()
+        ax.set_title(f"Race {race_num} Analysis", fontsize=14)
+        ax.set_xlabel("Score")
         
-        # [關鍵] 將圖表轉換為圖片流 (BytesIO)
+        # 3. 轉圖片
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches='tight', dpi=150)
+        fig.savefig(buf, format="png", bbox_inches='tight')
         buf.seek(0)
-        plt.close(fig) # 關閉圖表釋放記憶體
-        return buf
+        plt.close(fig)
         
+        print("DEBUG: Plot generated successfully")
+        return buf
+
     except Exception as e:
-        st.error(f"Plot Error: {e}")
+        # 這裡會把具體的報錯印在網頁上
+        st.error(f"❌ 繪圖崩潰: {str(e)}")
         return None
 
 # ===================== 2. 數據庫與計算 =====================
@@ -328,7 +303,7 @@ if app_mode == "📡 實時 (Live)":
         
         st.caption(f"Last Update (HKT): {current_race['last_update']}")
         
-        # 1. 顯示 Top Picks
+        # 顯示 Top Picks & Table
         top_picks = df[df["得分"] >= 65]
         if not top_picks.empty:
             st.markdown("**TOP PICKS**")
@@ -356,29 +331,21 @@ if app_mode == "📡 實時 (Live)":
                         </div>
                         """, unsafe_allow_html=True)
         
-        # 2. 顯示表格
         st.markdown("**Overview**")
-        st.dataframe(
-            df[["馬號", "馬名", "現價", "上回", "真實走勢(%)", "騎師", "練馬師", "得分"]],
-            use_container_width=True, hide_index=True,
-            column_config={
-                "馬號": st.column_config.NumberColumn(format="%d", width="small"),
-                "現價": st.column_config.NumberColumn(format="%.1f"),
-                "上回": st.column_config.NumberColumn(format="%.1f"),
-                "真實走勢(%)": st.column_config.NumberColumn("走勢%", format="%.1f"),
-                "得分": st.column_config.ProgressColumn("評分", format="%.1f", min_value=0, max_value=100)
-            }
-        )
+        st.dataframe(df[["馬號", "馬名", "現價", "上回", "真實走勢(%)", "騎師", "練馬師", "得分"]], use_container_width=True, hide_index=True)
 
-        # 3. 顯示視覺化圖表 (使用 st.image)
+        # ====== 這裡嘗試畫圖 ======
         st.markdown("---")
-        st.markdown("##### 📊 賽事形勢圖 (Chart)")
+        st.markdown("##### 📊 賽事形勢圖")
         
-        img_buffer = plot_horse_chart_as_image(df, selected_race)
+        # 呼叫除錯用繪圖函數
+        img_buffer = plot_chart_debug(df, selected_race)
+        
         if img_buffer:
-            # 使用 container width 確保圖片不會太小
-            st.image(img_buffer, use_container_width=True)
-        
+            st.image(img_buffer, use_container_width=True, caption="Analysis Chart")
+        else:
+            st.warning("⚠️ 圖表暫時無法顯示 (Chart buffer is empty)")
+            
     else:
         st.info("等待數據輸入...")
 
@@ -386,33 +353,35 @@ elif app_mode == "📜 歷史 (History)":
     if selected_date and str(selected_history_race) in history_db[selected_date]:
         data = history_db[selected_date][str(selected_history_race)]
         st.markdown(f"#### 📜 {selected_date} - 第 {selected_history_race} 場")
-        
         df_hist = pd.DataFrame(data["odds_data"])
         if "真實走勢(%)" not in df_hist.columns: df_hist["真實走勢(%)"] = 0.0
         df_hist["得分"] = df_hist.apply(calculate_score, axis=1)
         df_hist = df_hist.sort_values(["得分", "現價"], ascending=[False, True])
         
-        top_picks = df_hist[df_hist["得分"] >= 65]
-        if not top_picks.empty:
-            st.markdown("**TOP PICKS (Record)**")
-            cols = st.columns(min(len(top_picks), 3))
-            for idx, col in enumerate(cols):
-                if idx < len(top_picks):
-                    row = top_picks.iloc[idx]
-                    with col:
-                        st.markdown(f"""
-                        <div class="horse-card" style="background-color:#f9f9f9; border-top: 4px solid #555;">
-                            <div style="font-weight:bold; color:#333;">#{row['馬號']} {row['馬名']}</div>
-                            <div style="font-size:1.2em; font-weight:bold;">{row['現價']} <span style="font-size:0.8em; color:#c62828;">({row['得分']}分)</span></div>
-                        </div>
-                        """, unsafe_allow_html=True)
-        
+        # ... (Table display code) ...
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
         
         st.markdown("---")
         st.markdown("##### 📊 歷史形勢圖")
-        img_buffer = plot_horse_chart_as_image(df_hist, selected_history_race, date_str=selected_date)
+        img_buffer = plot_chart_debug(df_hist, selected_history_race)
         if img_buffer:
             st.image(img_buffer, use_container_width=True)
     else:
         st.info("此場次無數據")
+
+# ===================== 5. 測試區域 =====================
+st.divider()
+if st.button("🧪 點我測試圖表功能 (Test Chart)"):
+    # 這裡製造假資料，看看圖表功能本身是不是好的
+    st.write("Generating test chart...")
+    test_data = pd.DataFrame({
+        "馬號": [1, 2, 3],
+        "馬名": ["Test A", "Test B", "Test C"],
+        "得分": [80, 50, 20]
+    })
+    
+    buf = plot_chart_debug(test_data, 999)
+    if buf:
+        st.image(buf, caption="Test Chart - If you see this, Matplotlib is working!")
+    else:
+        st.error("Test failed.")
