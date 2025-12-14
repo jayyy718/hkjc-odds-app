@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import re
 
-st.set_page_config(page_title="HKJC 數據驅動版By Jay", layout="wide")
-st.title("🏇 HKJC 智能分析 (2024/25 數據驅動版)")
+st.set_page_config(page_title="HKJC 數據驅動版", layout="wide")
+st.title("🏇 HKJC 智能分析 (2024/25 數據驅動版)By JAY")
 st.caption("核心演算法已根據2024-2025 年度賽事數據進行校準。")
 
 # ===================== 1. 基於真實數據的評分庫 =====================
