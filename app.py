@@ -20,13 +20,35 @@ def get_global_data():
 
 race_storage = get_global_data()
 
-# ===================== 1. 頁面配置與 CSS =====================
+# ===================== 1. 頁面配置與 CSS (修復版) =====================
 st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #f5f7f9; color: #333; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    /* 全局字體設定 */
+    .stApp { 
+        background-color: #f5f7f9; 
+        color: #333333; 
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+    }
     
+    /* 側邊欄強制修復：白底深字 */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #eeeeee;
+    }
+    
+    /* 強制側邊欄內所有文字顏色為深灰，防止白底白字 */
+    section[data-testid="stSidebar"] h1, 
+    section[data-testid="stSidebar"] h2, 
+    section[data-testid="stSidebar"] h3, 
+    section[data-testid="stSidebar"] span, 
+    section[data-testid="stSidebar"] label, 
+    section[data-testid="stSidebar"] div,
+    section[data-testid="stSidebar"] p {
+        color: #333333 !important;
+    }
+
     /* 標題區塊 */
     .title-container {
         display: flex; justify-content: space-between; align-items: baseline;
@@ -51,7 +73,7 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 15px;
     }
     .top-pick-card {
-        background-color: #fff; border-top: 4px solid #c62828; /* 紅色頂邊代表重點 */
+        background-color: #fff; border-top: 4px solid #c62828; 
         border-left: 1px solid #e0e0e0; border-right: 1px solid #e0e0e0; border-bottom: 1px solid #e0e0e0;
     }
     
@@ -64,9 +86,9 @@ st.markdown("""
         display: inline-block; padding: 2px 8px; border-radius: 2px; 
         font-size: 11px; font-weight: bold; text-transform: uppercase;
     }
-    .tag-drop { background-color: #ffebee; color: #c62828; } /* 落飛紅底紅字 */
-    .tag-rise { background-color: #e8f5e9; color: #2e7d32; } /* 回飛綠底綠字 */
-    .tag-top { background-color: #1a237e; color: white; }    /* 重心藍底白字 */
+    .tag-drop { background-color: #ffebee; color: #c62828; } 
+    .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
+    .tag-top { background-color: #1a237e; color: white; }    
     
     /* 按鈕與連結 */
     .stButton>button {
@@ -74,9 +96,6 @@ st.markdown("""
         height: 45px; font-weight: 600; border: none; text-transform: uppercase;
     }
     .stButton>button:hover { background-color: #283593; }
-    
-    /* 側邊欄優化 */
-    section[data-testid="stSidebar"] { background-color: #fff; border-right: 1px solid #eee; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -159,7 +178,7 @@ def parse_info_data(text):
     if rows: return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
     return pd.DataFrame()
 
-# ===================== 4. 側邊欄導航 =====================
+# ===================== 4. 側邊欄導航 (修復文字顯示) =====================
 with st.sidebar:
     st.markdown("### 賽事導航")
     selected_race = st.selectbox("選擇場次", options=range(1, 15), format_func=lambda x: f"第 {x} 場 (Race {x})")
