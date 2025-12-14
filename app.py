@@ -3,6 +3,12 @@ import pandas as pd
 import re
 import json
 import os
+import matplotlib
+# 強制使用 Agg 後端
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import io  # 新增：用於處理圖片流
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
@@ -13,6 +19,10 @@ HKT = timezone(timedelta(hours=8))
 REGEX_INT = re.compile(r'^\d+$')
 REGEX_FLOAT = re.compile(r'\d+\.?\d*')
 REGEX_CHN = re.compile(r'[\u4e00-\u9fa5]+')
+
+# 字體設定
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'WenQuanYi Micro Hei', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
 
 @st.cache_resource
 def get_global_data():
@@ -60,6 +70,74 @@ def load_history():
         with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {}
+
+# --- [核心] 圖表繪製函數 (圖片版) ---
+def plot_horse_chart_as_image(df, race_num, date_str=None):
+    if df.empty: return None
+
+    try:
+        # 1. 強制數據轉換 (防止數據格式錯誤導致圖表空白)
+        df_plot = df.copy()
+        df_plot["得分"] = pd.to_numeric(df_plot["得分"], errors='coerce').fillna(0)
+        df_plot = df_plot.sort_values("得分", ascending=True)
+        
+        names = df_plot["馬名"].astype(str).tolist()
+        nos = df_plot["馬號"].astype(str).tolist()
+        scores = df_plot["得分"].tolist()
+        jockeys = df_plot["騎師"].astype(str).tolist()
+        trainers = df_plot["練馬師"].astype(str).tolist()
+        
+        # 2. 顏色
+        norm = mcolors.Normalize(vmin=0, vmax=100)
+        cmap = plt.get_cmap('RdYlGn')
+        colors = [cmap(norm(s)) for s in scores]
+        
+        # 3. 畫布
+        fig, ax = plt.subplots(figsize=(10, len(df)*0.6 + 1.5))
+        
+        # 4. 繪製
+        y_pos = range(len(df))
+        bars = ax.barh(y_pos, scores, color=colors, height=0.7)
+        
+        # 5. Y軸
+        y_labels = [f"{no}. {name}" for no, name in zip(nos, names)]
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(y_labels, fontsize=12, fontweight='bold')
+        
+        # 6. Bar 內部文字
+        for bar, score, j, t in zip(bars, scores, jockeys, trainers):
+            width = bar.get_width()
+            label_text = f"{j}-{t} {score}"
+            if width > 20:
+                ax.text(width - 1, bar.get_y() + bar.get_height()/2, label_text, 
+                        ha='right', va='center', color='black', fontsize=10, fontweight='bold')
+            else:
+                ax.text(width + 1, bar.get_y() + bar.get_height()/2, label_text,
+                        ha='left', va='center', color='black', fontsize=10)
+
+        # 7. 修飾
+        date_display = date_str if date_str else datetime.now(HKT).strftime("%m-%d")
+        ax.set_title(f"Race {race_num} Analysis ({date_display})", fontsize=16, pad=15)
+        ax.set_xlabel("AI Score", fontsize=11)
+        ax.set_xlim(0, 105)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        
+        fig.patch.set_facecolor('#f8f9fa')
+        ax.set_facecolor('#f8f9fa')
+        
+        plt.tight_layout()
+        
+        # [關鍵] 將圖表轉換為圖片流 (BytesIO)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches='tight', dpi=150)
+        buf.seek(0)
+        plt.close(fig) # 關閉圖表釋放記憶體
+        return buf
+        
+    except Exception as e:
+        st.error(f"Plot Error: {e}")
+        return None
 
 # ===================== 2. 數據庫與計算 =====================
 JOCKEY_RANK = { 'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'C Williams': 5.9, '韋紀力': 5.9, 'R Moore': 5.9, '莫雅': 5.9, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'R Kingscote': 3.8, '金美琪': 3.8, 'A Atzeni': 3.7, '艾兆禮': 3.7, 'B Avdulla': 3.7, '艾道拿': 3.7, 'P N Wong': 3.4, '黃寶妮': 3.4, 'T Marquand': 3.3, '馬昆': 3.3, 'H Doyle': 3.3, '杜苑欣': 3.3, 'E C W Wong': 3.2, '黃智弘': 3.2, 'K C Leung': 3.2, '梁家俊': 3.2, 'B Shinn': 3.0, '薛恩': 3.0, 'K Teetan': 2.8, '田泰安': 2.8, 'H Bentley': 2.7, '班德禮': 2.7, 'M F Poon': 2.6, '潘明輝': 2.6, 'C L Chau': 2.4, '周俊樂': 2.4, 'M Chadwick': 2.4, '蔡明紹': 2.4, 'A Badel': 2.4, '巴度': 2.4, 'L Hewitson': 2.3, '希威森': 2.3, 'J Orman': 2.2, '奧文': 2.2, 'K De Melo': 1.9, '董明朗': 1.9, 'M L Yeung': 1.8, '楊明綸': 1.8, 'Y L Chung': 1.8, '鍾易禮': 1.8, 'A Hamelin': 1.7, '賀銘年': 1.7, 'H T Mo': 1.3, '巫顯東': 1.3, 'B Thompson': 0.9, '湯普新': 0.9, 'A Pouchin': 0.8, '普珍宜': 0.8 }
@@ -292,14 +370,14 @@ if app_mode == "📡 實時 (Live)":
             }
         )
 
-        # 3. 測試：使用 Streamlit 內建的原生圖表 (不需要 matplotlib)
-        # 如果這裡可以顯示，那代表是 matplotlib 的問題
+        # 3. 顯示視覺化圖表 (使用 st.image)
         st.markdown("---")
-        st.markdown("##### 📊 賽事形勢圖 (Native Streamlit Chart)")
+        st.markdown("##### 📊 賽事形勢圖 (Chart)")
         
-        # 準備資料
-        chart_data = df[["馬名", "得分"]].set_index("馬名")
-        st.bar_chart(chart_data)
+        img_buffer = plot_horse_chart_as_image(df, selected_race)
+        if img_buffer:
+            # 使用 container width 確保圖片不會太小
+            st.image(img_buffer, use_container_width=True)
         
     else:
         st.info("等待數據輸入...")
@@ -333,8 +411,8 @@ elif app_mode == "📜 歷史 (History)":
         
         st.markdown("---")
         st.markdown("##### 📊 歷史形勢圖")
-        chart_data = df_hist[["馬名", "得分"]].set_index("馬名")
-        st.bar_chart(chart_data)
-
+        img_buffer = plot_horse_chart_as_image(df_hist, selected_history_race, date_str=selected_date)
+        if img_buffer:
+            st.image(img_buffer, use_container_width=True)
     else:
         st.info("此場次無數據")
