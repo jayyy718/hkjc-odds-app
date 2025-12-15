@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.1"  # 更新：Sidebar 場次選擇改為直觀按鈕
+APP_VERSION = "V1.2"  # 更新：Sidebar 場次標籤改為「賽事 X」
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
@@ -254,14 +254,12 @@ with st.sidebar:
     
     if app_mode == "📡 實時 (Live)":
         st.divider()
-        st.markdown("**選擇場次 (Race No.)**")
-        # 改用 Radio 按鈕，數字 1-14，不需要打字
-        # horizontal=True 讓它變成橫向，如果覺得太擠可以去掉
-        # format_func 讓它顯示 R1, R2...
+        st.markdown("**選擇場次**")
+        # 修改這裡：使用「賽事 1」格式
         sel_race = st.radio(
             "選擇場次", 
             options=list(range(1, 15)), 
-            format_func=lambda x: f"R{x}",
+            format_func=lambda x: f"賽事 {x}",
             horizontal=True,
             label_visibility="collapsed"
         )
@@ -304,7 +302,7 @@ if app_mode == "📡 實時 (Live)":
                 st.error(err)
     
     with c2:
-        st.info(f"第 {sel_race} 場 | 上次更新: {curr['last_update']}")
+        st.info(f"賽事 {sel_race} | 上次更新: {curr['last_update']}")
 
     with st.expander("🛠️ 補充排位資料"):
         txt_input = st.text_area("排位表文字", value=curr["raw_info_text"], height=100)
@@ -373,8 +371,8 @@ elif app_mode == "📜 歷史 (History)":
         sel_d = st.selectbox("日期", dates)
         if sel_d:
             races = sorted([int(x) for x in h_db[sel_d].keys()])
-            # 歷史這裡也改成 Radio 方便切換
-            sel_r = st.radio("場次", races, format_func=lambda x: f"R{x}", horizontal=True)
+            # 歷史這裡也改成「賽事 X」
+            sel_r = st.radio("場次", races, format_func=lambda x: f"賽事 {x}", horizontal=True)
             if sel_r:
                 raw = h_db[sel_d][str(sel_r)]["odds"]
                 hist_df = pd.DataFrame(raw)
