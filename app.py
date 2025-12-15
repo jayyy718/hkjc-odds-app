@@ -145,43 +145,65 @@ st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 # CSS 優化：減少渲染負擔
 st.markdown("""
 <style>
-    /* 1. 全局設定 (預設所有字體黑色) */
+    /* 1. 全局設定 */
     .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     
-    /* 2. Sidebar 專用設定 */
+    /* 2. Sidebar 設定 (保持深底白字輸入框) */
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
-    /* Sidebar 內一般文字為黑色 */
     section[data-testid="stSidebar"] .stMarkdown, 
-    section[data-testid="stSidebar"] .stRadio label,
-    section[data-testid="stSidebar"] p,
-    section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { 
-        color: #000000 !important; 
-    }
+    section[data-testid="stSidebar"] p, 
+    section[data-testid="stSidebar"] label { color: #000000 !important; }
     
-    /* Sidebar 內的輸入框 (選擇場次、密碼) -> 改為深底白字 */
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
     section[data-testid="stSidebar"] div[data-baseweb="input"] > div {
-        background-color: #333333 !important; /* 深灰背景 */
-        color: #ffffff !important;           /* 白字 */
+        background-color: #333333 !important; 
+        color: #ffffff !important;
     }
     section[data-testid="stSidebar"] div[data-baseweb="select"] span { color: #ffffff !important; }
     section[data-testid="stSidebar"] input { color: #ffffff !important; }
 
-    /* 3. 主畫面 (Main Area) 數據控制台專用修正 */
-    /* 確保主畫面的 Text Area (賠率數據、排位數據) 是白底黑字，邊框清楚 */
+    /* 3. 數據控制台 (Expander) 專用修正 - 強制白底黑字 */
+    div[data-testid="stExpander"] {
+        background-color: #ffffff !important; 
+        border: 1px solid #cccccc !important;
+        border-radius: 8px !important;
+        color: #000000 !important;
+    }
+    div[data-testid="stExpander"] summary {
+        color: #000000 !important; /* Expander 標題黑色 */
+        font-weight: bold;
+    }
+    div[data-testid="stExpander"] div[data-testid="stExpanderDetails"] {
+        background-color: #ffffff !important; /* 展開後的內容背景全白 */
+        color: #000000 !important;            /* 內容文字全黑 */
+    }
+
+    /* 4. 修正連結樣式 (51saima, HKJC) */
+    .source-link { 
+        display: inline-block; 
+        margin-right: 10px; 
+        text-decoration: none; 
+        color: #1a237e !important;   /* 深藍色字 */
+        font-weight: bold; 
+        font-size: 13px; 
+        padding: 6px 12px; 
+        background-color: #e8eaf6 !important; /* 淺藍底 */
+        border: 1px solid #c5cae9 !important; /* 邊框 */
+        border-radius: 4px; 
+    }
+    .source-link:hover {
+        background-color: #c5cae9 !important; /* 滑鼠懸停變色 */
+    }
+
+    /* 5. 輸入框修正 (賠率/排位) */
     .stTextArea textarea {
         background-color: #ffffff !important;
         color: #000000 !important;
-        border: 1px solid #999999 !important; /* 加深邊框 */
-        font-family: 'Roboto Mono', monospace; /* 數據輸入用等寬字體更好看 */
+        border: 1px solid #999 !important;
     }
-    
-    /* 確保主畫面所有的 Label (輸入框上面的標題) 也是黑色 */
-    .stTextArea label, .stMarkdown p {
-        color: #000000 !important;
-    }
+    .stTextArea label { color: #000000 !important; }
 
-    /* 4. 其他元件樣式 (保持不變) */
+    /* 6. 其他樣式 */
     .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
     .horse-card { background-color: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; margin-bottom: 8px; }
     .top-pick-card { border-top: 4px solid #c62828; }
@@ -191,8 +213,6 @@ st.markdown("""
     .tag-top { background-color: #1a237e; color: white; }    
 </style>
 """, unsafe_allow_html=True)
-
-
 
 
 st.markdown("""
