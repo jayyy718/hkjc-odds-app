@@ -8,6 +8,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
+# ===================== 版本控制 =====================
+APP_VERSION = "V1.1"  # 更新：Sidebar 場次選擇改為直觀按鈕
+
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
@@ -192,17 +195,8 @@ def load_history_data():
         except: pass
     return {}
 
-def get_auto_version():
-    try:
-        # 讀取檔案修改時間
-        ts = os.path.getmtime(__file__)
-        dt = datetime.fromtimestamp(ts, tz=HKT)
-        return f"V1.{dt.strftime('%m%d.%H%M')}"
-    except:
-        return "V1.0"
-
 # ===================== 3. UI 界面 =====================
-st.set_page_config(page_title="HKJC 賽馬智腦 (Pro)", layout="wide")
+st.set_page_config(page_title=f"賽馬智腦 {APP_VERSION}", layout="wide")
 
 st.markdown("""
 <style>
@@ -244,12 +238,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-APP_VER = get_auto_version()
-
 st.markdown(f"""
 <div style="border-bottom: 2px solid #1a237e; padding-bottom: 5px; margin-bottom: 10px;">
     <span class="main-title">賽馬智腦</span>
-    <span style="font-size:14px; color:#fff; background-color:#1a237e; padding:3px 8px; border-radius:4px; margin-left:8px; vertical-align:middle;">{APP_VER}</span>
+    <span style="font-size:14px; color:#fff; background-color:#1a237e; padding:3px 8px; border-radius:4px; margin-left:8px; vertical-align:middle;">{APP_VERSION}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -262,7 +254,18 @@ with st.sidebar:
     
     if app_mode == "📡 實時 (Live)":
         st.divider()
-        sel_race = st.selectbox("選擇場次", range(1, 15), format_func=lambda x: f"第 {x} 場")
+        st.markdown("**選擇場次 (Race No.)**")
+        # 改用 Radio 按鈕，數字 1-14，不需要打字
+        # horizontal=True 讓它變成橫向，如果覺得太擠可以去掉
+        # format_func 讓它顯示 R1, R2...
+        sel_race = st.radio(
+            "選擇場次", 
+            options=list(range(1, 15)), 
+            format_func=lambda x: f"R{x}",
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+        
         st_autorefresh(interval=30000, key="auto_refresh")
         st.divider()
         if st.button("💾 封存今日數據"):
@@ -301,7 +304,7 @@ if app_mode == "📡 實時 (Live)":
                 st.error(err)
     
     with c2:
-        st.info(f"上次更新: {curr['last_update']}")
+        st.info(f"第 {sel_race} 場 | 上次更新: {curr['last_update']}")
 
     with st.expander("🛠️ 補充排位資料"):
         txt_input = st.text_area("排位表文字", value=curr["raw_info_text"], height=100)
@@ -370,7 +373,8 @@ elif app_mode == "📜 歷史 (History)":
         sel_d = st.selectbox("日期", dates)
         if sel_d:
             races = sorted([int(x) for x in h_db[sel_d].keys()])
-            sel_r = st.selectbox("場次", races, format_func=lambda x: f"第 {x} 場")
+            # 歷史這裡也改成 Radio 方便切換
+            sel_r = st.radio("場次", races, format_func=lambda x: f"R{x}", horizontal=True)
             if sel_r:
                 raw = h_db[sel_d][str(sel_r)]["odds"]
                 hist_df = pd.DataFrame(raw)
