@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.4"  # 更新：修復主頁字體顏色，強制為深色
+APP_VERSION = "V1.5"  # 更新：修復評級標籤字體顏色 (白) & 提示語顏色 (黑)
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
@@ -214,10 +214,11 @@ st.markdown("""
         background-color: #f5f7f9 !important; 
     }
     
-    /* 2. 強制所有文本顏色為黑色 (解決 Dark Mode 下看不見的問題) */
+    /* 2. 強制所有文本顏色為黑色 */
     .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, 
     .stMarkdown h4, .stMarkdown h5, .stMarkdown h6, .stMarkdown span,
-    .stText, .stCode, div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"] {
+    .stText, .stCode, div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"],
+    .stCaption {
         color: #000000 !important;
     }
     
@@ -263,9 +264,14 @@ st.markdown("""
     .top-pick-card { border-top: 4px solid #c62828; }
     
     .tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
-    .tag-drop { background-color: #ffebee; color: #c62828; } 
-    .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
-    .tag-lvl { background-color: #1a237e; color: white; }
+    .tag-drop { background-color: #ffebee; color: #c62828 !important; } 
+    .tag-rise { background-color: #e8f5e9; color: #2e7d32 !important; } 
+    
+    /* [修改點] 評級標籤強制白字 */
+    .tag-lvl { 
+        background-color: #1a237e; 
+        color: #ffffff !important; 
+    }
     
     /* 7. Tab 標籤顏色 */
     div[data-baseweb="tab-list"] button {
@@ -348,7 +354,8 @@ if app_mode == "📡 實時 (Live)":
                 st.rerun()
             else:
                 st.error(f"更新失敗：{err}")
-                st.caption("提示：目前非賽事時段，請嘗試開啟 Sidebar 的「🧪 測試模式」預覽。")
+                # [修改點] 提示文字加上 style 確保是黑色
+                st.markdown('<p style="color:black; font-size:14px;">提示：目前非賽事時段，請嘗試開啟 Sidebar 的「🧪 測試模式」預覽。</p>', unsafe_allow_html=True)
     
     with c2:
         st.info(f"賽事 {sel_race} | 上次更新: {curr['last_update']}")
@@ -413,7 +420,8 @@ if app_mode == "📡 實時 (Live)":
     else:
         st.info("⚠️ 暫無數據")
         if 'use_demo' in locals() and not use_demo:
-            st.warning("提示：請嘗試開啟 Sidebar 的「🧪 測試模式」以預覽介面。")
+            # [修改點] 提示文字加上 style 確保是黑色
+            st.markdown('<p style="color:black; font-size:14px;">提示：請嘗試開啟 Sidebar 的「🧪 測試模式」以預覽介面。</p>', unsafe_allow_html=True)
 
 elif app_mode == "📜 歷史 (History)":
     h_db = load_history_data()
