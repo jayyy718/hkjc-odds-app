@@ -154,19 +154,18 @@ def parse_info(txt):
     return pd.DataFrame()
 
 def save_history_data(store):
-    d_data = {}
+    daily_export = {}
     today = datetime.now(HKT).strftime("%Y-%m-%d")
     
-    # 這裡就是之前出錯的地方，我重新寫得更簡單明確
     for r_id, val in store.items():
         if not val["current_df"].empty:
-            d_data[str(r_id)] = {
+            daily_export[str(r_id)] = {
                 "odds": val["current_df"].to_dict(orient="records"),
                 "info": val["raw_info_text"],
                 "time": val["last_update"]
             }
             
-    if d_
+    if daily_export:
         full_hist = {}
         if os.path.exists(HISTORY_FILE):
             try:
@@ -175,7 +174,7 @@ def save_history_data(store):
             except:
                 full_hist = {}
         
-        full_hist[today] = d_data
+        full_hist[today] = daily_export
         
         try:
             with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
