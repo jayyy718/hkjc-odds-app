@@ -145,38 +145,53 @@ st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 # CSS 優化：減少渲染負擔
 st.markdown("""
 <style>
-    /* 全局設定 */
+    /* 1. 全局設定 (預設所有字體黑色) */
     .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     
-    /* Sidebar 標題與標籤 - 保持黑色 */
+    /* 2. Sidebar 專用設定 */
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
+    /* Sidebar 內一般文字為黑色 */
     section[data-testid="stSidebar"] .stMarkdown, 
     section[data-testid="stSidebar"] .stRadio label,
-    section[data-testid="stSidebar"] p { color: #000000 !important; }
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { 
+        color: #000000 !important; 
+    }
     
-    /* 特別指定：Sidebar 內的輸入框 (Selectbox & TextInput) 文字改為白色 */
-    section[data-testid="stSidebar"] div[data-baseweb="select"] span { color: #ffffff !important; } /* 下拉選單選中後的字 */
-    section[data-testid="stSidebar"] div[data-baseweb="select"] ul li { color: #ffffff !important; } /* 下拉選單選項(視瀏覽器而定) */
-    section[data-testid="stSidebar"] input.st-be { color: #ffffff !important; } /* 密碼輸入框文字 */
-    
-    /* 修正輸入框背景 (怕白字配白底看不到，這裡強制給輸入框一個深色背景，如果你原本背景是深色可拿掉) */
-    section[data-testid="stSidebar"] div[data-baseweb="select"] > div { background-color: #333333 !important; }
-    section[data-testid="stSidebar"] div[data-baseweb="input"] > div { background-color: #333333 !important; }
+    /* Sidebar 內的輸入框 (選擇場次、密碼) -> 改為深底白字 */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
+    section[data-testid="stSidebar"] div[data-baseweb="input"] > div {
+        background-color: #333333 !important; /* 深灰背景 */
+        color: #ffffff !important;           /* 白字 */
+    }
+    section[data-testid="stSidebar"] div[data-baseweb="select"] span { color: #ffffff !important; }
+    section[data-testid="stSidebar"] input { color: #ffffff !important; }
 
-    /* 主標題樣式 */
-    .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
+    /* 3. 主畫面 (Main Area) 數據控制台專用修正 */
+    /* 確保主畫面的 Text Area (賠率數據、排位數據) 是白底黑字，邊框清楚 */
+    .stTextArea textarea {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        border: 1px solid #999999 !important; /* 加深邊框 */
+        font-family: 'Roboto Mono', monospace; /* 數據輸入用等寬字體更好看 */
+    }
     
-    /* 卡片樣式 */
+    /* 確保主畫面所有的 Label (輸入框上面的標題) 也是黑色 */
+    .stTextArea label, .stMarkdown p {
+        color: #000000 !important;
+    }
+
+    /* 4. 其他元件樣式 (保持不變) */
+    .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
     .horse-card { background-color: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; margin-bottom: 8px; }
     .top-pick-card { border-top: 4px solid #c62828; }
-    
-    /* 標籤樣式 */
     .status-tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
     .tag-drop { background-color: #ffebee; color: #c62828; } 
     .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
     .tag-top { background-color: #1a237e; color: white; }    
 </style>
 """, unsafe_allow_html=True)
+
 
 
 
