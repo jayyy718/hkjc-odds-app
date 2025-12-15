@@ -56,19 +56,13 @@ def fetch_hkjc_data(race_no):
     透過 HKJC JSON 接口獲取即時賠率 (參考 GitHub 開源項目邏輯)
     """
     try:
-        # 這是 HKJC 的公開 JSON 數據接口，比 GraphQL 簡單且不需要複雜驗證
-        # date 參數通常需要是今天的日期，或者下次賽事日期
         today_str = datetime.now(HKT).strftime("%Y-%m-%d")
-        
-        # URL 範例: https://bet.hkjc.com/racing/getJSON.aspx?type=winodds&date=2025-12-16&venue=HV&start=1&end=10
-        # venue (ST=沙田, HV=跑馬地) - 這裡我們先盲猜 ST，如果沒數據再試 HV，或者讓用戶選
-        # 為了簡化，我們先不指定 venue，HKJC API 有時會自動給當日
         
         url = "https://bet.hkjc.com/racing/getJSON.aspx"
         params = {
             "type": "winodds",
             "date": today_str,
-            "venue": "ST", # 默認沙田，可改 HV
+            "venue": "ST", # 默認沙田
             "start": race_no,
             "end": race_no
         }
@@ -82,14 +76,13 @@ def fetch_hkjc_data(race_no):
             resp = requests.get(url, params=params, headers=HEADERS, timeout=5)
             
         if resp.status_code == 200:
-            data = resp.json()
-            # 解析 JSON
-            # 結構通常是: {"OUT": "11100;1=14;2=4.5;..."} 
-            # 格式: 馬號=賠率;馬號=賠率...
-            
+            try:
+                data = resp.json()
+            except:
+                return None, "API 回傳格式錯誤 (非 JSON)"
+
             if "OUT" in 
                 raw_str = data["OUT"]
-                # 清理數據，有些會有時間戳在前頭
                 if ";" in raw_str:
                     parts = raw_str.split(";")
                     odds_map = {}
@@ -97,11 +90,16 @@ def fetch_hkjc_data(race_no):
                         if "=" in p:
                             k, v = p.split("=")
                             if k.isdigit():
-                                odds_map[int(k)] = float(v) if v != "999" else 0.0
+                                try:
+                                    val = float(v)
+                                    odds_map[int(k)] = val if val < 900 else 0.0
+                                except:
+                                    pass
                     
                     if odds_map:
+                        # 創建 DataFrame
                         df = pd.DataFrame(list(odds_map.items()), columns=["馬號", "現價"])
-                        # 這裡我們缺少馬名，暫時用 "馬匹N" 代替，或者保留原有馬名如果存在
+                        # 添加臨時馬名
                         df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}") 
                         return df, None
             
@@ -142,37 +140,14 @@ def save_daily_history(data_dict):
 def load_history():
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            try: return json.load(f)
+            except: return {}
     return {}
 
 def get_ability_score(name, rank_dict):
     for key in rank_dict:
         if key in name or name in key: return rank_dict[key]
     return 2.0
-
-# 保持舊的解析函數以防備用
-def parse_odds_data(text):
-    rows = []
-    lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
-    i = 0
-    L = len(lines)
-    while i < L:
-        if REGEX_INT.match(lines[i]):
-            try:
-                no = int(lines[i])
-                name = lines[i+1] if i+1 < L else "未知"
-                win = 0.0
-                if i+2 < L:
-                    nums = REGEX_FLOAT.findall(lines[i+2])
-                    if nums: win = float(nums[0])
-                if win > 0:
-                    rows.append({"馬號": no, "馬名": name, "現價": win})
-                    i += 3
-                    continue
-            except: pass
-        i += 1
-    if rows: return pd.DataFrame(rows).drop_duplicates(subset=["馬號"]).set_index("馬號")
-    return pd.DataFrame()
 
 def parse_info_data(text):
     rows = []
@@ -252,7 +227,14 @@ with st.sidebar:
         st.divider()
         st.markdown("### 賽事導航")
         selected_race = st.selectbox("選擇場次", range(1, 15), format_func=lambda x: f"第 {x} 場")
-        st_autorefresh(interval=30000, key="live_refresh") # 每30秒自動刷新
+        st_autorefresh(interval=30000, key="live_refresh") 
+
+    # 管理員按鈕
+    st.divider()
+    if st.button("💾 封存今日數據", help="將今日所有數據寫入歷史檔案"):
+        success, msg = save_daily_history(race_storage)
+        if success: st.success("已封存！")
+        else: st.warning(msg)
 
 # ============= Live 模式 =============
 if app_mode == "📡 實時 (Live)":
@@ -265,14 +247,16 @@ if app_mode == "📡 實時 (Live)":
             with st.spinner("正在連接 HKJC 伺服器..."):
                 df_api, err = fetch_hkjc_data(selected_race)
                 if df_api is not None:
-                    # 合併舊有的馬名資訊（如果有的話，因為API只給馬號）
+                    # 保留排位資料
                     if not current_race["current_df"].empty:
-                        # 嘗試保留已有的馬名/騎師/練馬師
                         old_info = current_race["current_df"][["馬號", "馬名", "騎師", "練馬師"]]
+                        # 合併：保留舊的馬名，除非它是 "馬匹 N"
                         df_api = df_api.drop(columns=["馬名"], errors="ignore").merge(old_info, on="馬號", how="left")
-                        df_api["馬名"] = df_api["馬名"].fillna(df_api["馬號"].apply(lambda x: f"馬匹 {x}"))
+                        # 填充空缺
+                        if "馬名" not in df_api.columns: df_api["馬名"] = df_api["馬號"].apply(lambda x: f"馬匹 {x}")
+                        else: df_api["馬名"] = df_api["馬名"].fillna(df_api["馬號"].apply(lambda x: f"馬匹 {x}"))
                     
-                    # 記錄歷史
+                    # 歷史記錄更新
                     if not current_race["current_df"].empty:
                         current_race["last_df"] = current_race["current_df"]
                     else:
@@ -281,7 +265,7 @@ if app_mode == "📡 實時 (Live)":
                     current_race["current_df"] = df_api
                     current_race["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
                     st.success("數據已更新！")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     st.rerun()
                 else:
                     st.error(err)
@@ -289,23 +273,23 @@ if app_mode == "📡 實時 (Live)":
     with c2:
         st.info(f"上次更新: {current_race['last_update']} | 場地: {venue_select[:2]}")
 
-    # 手動輸入備用 (Expander)
+    # 手動輸入備用
     with st.expander("🛠️ 手動輸入 / 修正排位資料"):
         with st.form(key=f"manual_form_{selected_race}"):
-            c_a, c_b = st.columns(2)
-            with c_a: new_odds = st.text_area("賠率數據 (備用)", height=100)
-            with c_b: new_info = st.text_area("排位數據 (補充馬名/騎師)", value=current_race["raw_info_text"], height=100, help="貼上排位表以補充 API 缺少的馬名和騎師資料")
+            st.caption("在此貼上排位表文字 (包含馬名、騎師、練馬師)，API 會自動合併賠率。")
+            new_info = st.text_area("排位數據", value=current_race["raw_info_text"], height=100)
             if st.form_submit_button("更新排位資料"):
                 if new_info:
                     df_info = parse_info_data(new_info)
                     if not df_info.empty:
-                        # 將排位資料合併進現有 DataFrame
                         if not current_race["current_df"].empty:
                             df_curr = current_race["current_df"]
-                            # 移除舊的騎練欄位避免衝突
-                            cols_to_drop = [c for c in ["騎師", "練馬師"] if c in df_curr.columns]
-                            df_curr = df_curr.drop(columns=cols_to_drop)
-                            # 合併
+                            # 移除舊列
+                            cols = [c for c in ["騎師", "練馬師", "馬名"] if c in df_curr.columns]
+                            df_curr = df_curr.drop(columns=cols, errors='ignore')
+                            # 合併新資料
+                            # 注意：parse_info_data 目前只抓騎練，我們可以修改它也嘗試抓馬名，
+                            # 但目前邏輯是合併騎練。如果排位表裡有馬名，可以進一步優化解析邏輯。
                             df_merged = df_curr.merge(df_info, on="馬號", how="left")
                             df_merged["騎師"] = df_merged["騎師"].fillna("未知")
                             df_merged["練馬師"] = df_merged["練馬師"].fillna("未知")
@@ -313,15 +297,17 @@ if app_mode == "📡 實時 (Live)":
                             current_race["raw_info_text"] = new_info
                             st.success("排位資料已更新！")
                             st.rerun()
+                        else:
+                            st.warning("請先按「立即更新賠率」獲取基礎馬號列表，再更新排位資料。")
 
     if not current_race["current_df"].empty:
         df = current_race["current_df"].copy()
         last = current_race["last_df"].copy()
         
-        # 簡單的數據清洗
-        if "騎師" not in df.columns: df["騎師"] = "未知"
-        if "練馬師" not in df.columns: df["練馬師"] = "未知"
-        
+        # 填充
+        for c in ["騎師", "練馬師"]:
+            if c not in df.columns: df[c] = "未知"
+            
         last_odds = last[["馬號", "現價"]].rename(columns={"現價": "上回"})
         if "上回" not in df.columns:
             df = df.merge(last_odds, on="馬號", how="left")
@@ -332,7 +318,6 @@ if app_mode == "📡 實時 (Live)":
         df = df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index(drop=True)
         df["信心級別"] = df["得分"].apply(get_level)
         
-        # 顯示
         tab1, tab2 = st.tabs(["📋 總覽", "📑 明細"])
         with tab1:
             max_horse = df.iloc[0]
@@ -366,15 +351,46 @@ if app_mode == "📡 實時 (Live)":
                                 <div style="margin-top:5px; font-size:12px;">{trend_html}</div>
                             </div>
                             """, unsafe_allow_html=True)
+            else:
+                st.info("暫無推薦")
+                
         with tab2:
             st.dataframe(df, use_container_width=True, hide_index=True)
-            
     else:
         st.info("⚠️ 暫無數據，請按上方的「🔄 立即更新賠率」按鈕。")
 
-# ============= History / Overview (保持不變) =============
 elif app_mode == "📜 歷史 (History)":
-    # (此處代碼與之前相同，省略以節省長度，請保留原有的歷史查看邏輯)
-    st.info("歷史功能與之前相同")
+    st.markdown("#### 📜 歷史回顧")
+    history_db = load_history()
+    if history_db:
+        d_list = sorted(history_db.keys(), reverse=True)
+        sel_date = st.selectbox("日期", d_list)
+        if sel_date:
+            sel_race = st.selectbox("場次", sorted([int(k) for k in history_db[sel_date].keys()]), format_func=lambda x: f"第 {x} 場")
+            if sel_race:
+                data = history_db[sel_date][str(sel_race)]
+                df_h = pd.DataFrame(data["odds_data"])
+                if "真實走勢(%)" not in df_h.columns: df_h["真實走勢(%)"] = 0.0
+                df_h["得分"] = df_h.apply(calculate_score, axis=1)
+                df_h = df_h.sort_values(["得分", "現價"], ascending=[False, True])
+                st.dataframe(df_h, use_container_width=True, hide_index=True)
+    else:
+        st.info("無歷史數據")
+
 elif app_mode == "📈 今日總覽":
-    st.info("總覽功能與之前相同")
+    st.markdown("#### 📈 今日總覽")
+    history_db = load_history()
+    today_str = datetime.now(HKT).strftime("%Y-%m-%d")
+    if today_str in history_db:
+        daily = history_db[today_str]
+        rows = []
+        for rid in sorted([int(k) for k in daily.keys()]):
+            d = daily[str(rid)]
+            df = pd.DataFrame(d["odds_data"])
+            if not df.empty:
+                df["得分"] = df.apply(calculate_score, axis=1)
+                top = df.sort_values("得分", ascending=False).iloc[0]
+                rows.append({"場次": rid, "推薦": f"#{top['馬號']} {top.get('馬名','')} ({top['得分']})"})
+        st.table(pd.DataFrame(rows))
+    else:
+        st.info("今日尚未封存數據")
