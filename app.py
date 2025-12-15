@@ -144,17 +144,16 @@ st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
 # CSS 優化：減少渲染負擔
 st.markdown("""
-st.markdown("""
 <style>
     /* 全局設定 */
     .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     
     /* Sidebar 專用設定 - 強制黑色字體 */
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
-    section[data-testid="stSidebar"] * { color: #000000 !important; } /* 所有 Sidebar 內的文字變黑 */
+    section[data-testid="stSidebar"] * { color: #000000 !important; }
     section[data-testid="stSidebar"] .stMarkdown h1, 
     section[data-testid="stSidebar"] .stMarkdown h2, 
-    section[data-testid="stSidebar"] .stMarkdown h3 { color: #000000 !important; } /* 標題變黑 */
+    section[data-testid="stSidebar"] .stMarkdown h3 { color: #000000 !important; }
     
     /* 主標題樣式 */
     .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
@@ -170,6 +169,7 @@ st.markdown("""
     .tag-top { background-color: #1a237e; color: white; }    
 </style>
 """, unsafe_allow_html=True)
+
 
 
 st.markdown("""
