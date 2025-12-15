@@ -3,14 +3,15 @@ import pandas as pd
 import re
 import json
 import os
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 0. 全局配置 (極簡化) =====================
+# ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 靜態資源快取
 @st.cache_resource
 def get_static_resources():
     return (
@@ -40,7 +41,27 @@ race_storage = get_global_data()
 JOCKEY_RANK = { 'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'C Williams': 5.9, '韋紀力': 5.9, 'R Moore': 5.9, '莫雅': 5.9, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'R Kingscote': 3.8, '金美琪': 3.8, 'A Atzeni': 3.7, '艾兆禮': 3.7, 'B Avdulla': 3.7, '艾道拿': 3.7, 'P N Wong': 3.4, '黃寶妮': 3.4, 'T Marquand': 3.3, '馬昆': 3.3, 'H Doyle': 3.3, '杜苑欣': 3.3, 'E C W Wong': 3.2, '黃智弘': 3.2, 'K C Leung': 3.2, '梁家俊': 3.2, 'B Shinn': 3.0, '薛恩': 3.0, 'K Teetan': 2.8, '田泰安': 2.8, 'H Bentley': 2.7, '班德禮': 2.7, 'M F Poon': 2.6, '潘明輝': 2.6, 'C L Chau': 2.4, '周俊樂': 2.4, 'M Chadwick': 2.4, '蔡明紹': 2.4, 'A Badel': 2.4, '巴度': 2.4, 'L Hewitson': 2.3, '希威森': 2.3, 'J Orman': 2.2, '奧文': 2.2, 'K De Melo': 1.9, '董明朗': 1.9, 'M L Yeung': 1.8, '楊明綸': 1.8, 'Y L Chung': 1.8, '鍾易禮': 1.8, 'A Hamelin': 1.7, '賀銘年': 1.7, 'H T Mo': 1.3, '巫顯東': 1.3, 'B Thompson': 0.9, '湯普新': 0.9, 'A Pouchin': 0.8, '普珍宜': 0.8 }
 TRAINER_RANK = { 'J Size': 4.4, '蔡約翰': 4.4, 'K L Man': 4.3, '文家良': 4.3, 'K W Lui': 4.0, '呂健威': 4.0, 'D Eustace': 3.9, '游達榮': 3.9, 'C Fownes': 3.9, '方嘉柏': 3.9, 'P F Yiu': 3.7, '姚本輝': 3.7, 'D A Hayes': 3.7, '大衛希斯': 3.7, 'M Newnham': 3.6, '廖康銘': 3.6, 'W Y So': 3.4, '蘇偉賢': 3.4, 'W K Mo': 3.3, '巫偉傑': 3.3, 'F C Lor': 3.2, '羅富全': 3.2, 'C H Yip': 3.2, '葉楚航': 3.2, 'C S Shum': 3.1, '沈集成': 3.1, 'K H Ting': 3.1, '丁冠豪': 3.1, 'A S Cruz': 3.0, '告東尼': 3.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'Y S Tsui': 2.5, '徐雨石': 2.5, 'J Richards': 2.3, '黎昭昇': 2.3, 'D J Hall': 2.3, '賀賢': 2.3, 'C W Chang': 2.2, '鄭俊偉': 2.2, 'T P Yung': 2.1, '容天鵬': 2.1 }
 
-# ===================== 1. 功能函數 (無 IO 操作) =====================
+# ===================== 1. 爬蟲功能 (51Saima) =====================
+def fetch_51saima_odds(race_no):
+    """
+    抓取 51saima 指定場次的獨贏賠率 (簡單版)
+    注意：這是一個基本示範，如果網站結構改變可能會失效
+    """
+    try:
+        # 51saima 的 URL 結構通常是 http://www.51saima.com/mobi/odds.jsp (需要 cookie 或 session，這裡嘗試直接模擬)
+        # 這裡我們用一個更穩定的方式：讓用戶自己貼上，或者嘗試抓取靜態頁面
+        # 由於 51saima 主要是動態加載，這裡模擬一個通用的請求（示範性質）
+        # 實際情況：Streamlit Cloud 的 IP 可能會被擋，或者需要特定的 Headers
+        
+        # 為了演示，這裡生成一個「模擬」的格式字串，
+        # 如果您有穩定的 API URL，可以直接替換這裡。
+        # 目前先回傳一個提示，因為直接爬取 51saima 需要處理 Session 和動態內容，較為複雜。
+        
+        return None, "自動抓取需要進階的反爬蟲處理 (Cloud環境受限)。建議繼續使用手動複製。"
+    except Exception as e:
+        return None, str(e)
+
+# ===================== 1. 功能函數 =====================
 
 def save_daily_history(data_dict):
     history_data = {}
@@ -142,13 +163,12 @@ def get_level(score):
 # ===================== 3. 頁面配置 =====================
 st.set_page_config(page_title="HKJC 賽馬智腦 By Jay", layout="wide")
 
-# CSS 優化：減少渲染負擔
 st.markdown("""
 <style>
     /* 1. 全局設定 */
     .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     
-    /* 2. Sidebar 設定 (保持深底白字輸入框) */
+    /* 2. Sidebar 設定 */
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
     section[data-testid="stSidebar"] .stMarkdown, 
     section[data-testid="stSidebar"] p, 
@@ -162,7 +182,7 @@ st.markdown("""
     section[data-testid="stSidebar"] div[data-baseweb="select"] span { color: #ffffff !important; }
     section[data-testid="stSidebar"] input { color: #ffffff !important; }
 
-    /* 3. 數據控制台 (Expander) 專用修正 - 強制白底黑字 */
+    /* 3. 數據控制台 (Expander) */
     div[data-testid="stExpander"] {
         background-color: #ffffff !important; 
         border: 1px solid #cccccc !important;
@@ -170,36 +190,37 @@ st.markdown("""
         color: #000000 !important;
     }
     div[data-testid="stExpander"] summary {
-        color: #000000 !important; /* Expander 標題黑色 */
+        color: #000000 !important; 
         font-weight: bold;
     }
     div[data-testid="stExpander"] div[data-testid="stExpanderDetails"] {
-        background-color: #ffffff !important; /* 展開後的內容背景全白 */
-        color: #000000 !important;            /* 內容文字全黑 */
+        background-color: #ffffff !important; 
+        color: #000000 !important;
     }
 
-    /* 4. 修正連結樣式 (51saima, HKJC) */
+    /* 4. 連結樣式 */
     .source-link { 
         display: inline-block; 
         margin-right: 10px; 
         text-decoration: none; 
-        color: #1a237e !important;   /* 深藍色字 */
+        color: #1a237e !important;   
         font-weight: bold; 
         font-size: 13px; 
         padding: 6px 12px; 
-        background-color: #e8eaf6 !important; /* 淺藍底 */
-        border: 1px solid #c5cae9 !important; /* 邊框 */
+        background-color: #e8eaf6 !important; 
+        border: 1px solid #c5cae9 !important; 
         border-radius: 4px; 
     }
     .source-link:hover {
-        background-color: #c5cae9 !important; /* 滑鼠懸停變色 */
+        background-color: #c5cae9 !important; 
     }
 
-    /* 5. 輸入框修正 (賠率/排位) */
+    /* 5. 輸入框修正 */
     .stTextArea textarea {
         background-color: #ffffff !important;
         color: #000000 !important;
         border: 1px solid #999 !important;
+        font-family: 'Roboto Mono', monospace;
     }
     .stTextArea label { color: #000000 !important; }
 
@@ -214,7 +235,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 st.markdown("""
 <div style="border-bottom: 2px solid #1a237e; padding-bottom: 5px; margin-bottom: 10px;">
     <span class="main-title">賽馬智腦</span>
@@ -222,7 +242,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("> 極速版：專注即時數據與評分，移除複雜圖表以提升速度。")
+st.write("System Status: Online (Lite Mode)")
 
 # ===================== 4. Sidebar =====================
 with st.sidebar:
@@ -232,6 +252,15 @@ with st.sidebar:
         ["📡 實時 (Live)", "📜 歷史 (History)", "📈 今日總覽"],
         label_visibility="collapsed"
     )
+    st.divider()
+    
+    # 外部連結 (賠率參考)
+    st.markdown("### 🔗 賠率參考")
+    st.markdown("""
+    - [🐎 堅仔 (即時落飛)](https://www.kinboy.com/zh-hant)
+    - [📊 51賽馬 (容易複製)](https://www.51saima.com/mobi/odds.jsp)
+    - [🌍 Racing Post](https://www.racingpost.com)
+    """)
     st.divider()
 
     st.markdown("### 設定")
@@ -253,10 +282,8 @@ with st.sidebar:
                 if success: st.success(msg)
                 else: st.warning(msg)
         
-        # 手動刷新按鈕
-        if st.button("🔄 刷新頁面", type="primary", use_container_width=True):
-            st.rerun()
-            
+        st_autorefresh(interval=15000, key="live_refresh")
+    
     elif app_mode == "📜 歷史 (History)":
         st.divider()
         st.markdown("### 檔案 Archive")
@@ -268,18 +295,24 @@ with st.sidebar:
             st.warning("無紀錄")
             selected_date = None
 
-
 # ============= Live 模式 =============
 if app_mode == "📡 實時 (Live)":
     current_race = race_storage[selected_race]
 
     if 'is_admin' in locals() and is_admin:
         with st.expander(f"⚙️ 數據控制台 (第 {selected_race} 場)", expanded=True):
+            # 增加一個說明，教用戶如何複製
+            st.info("💡 提示：點擊 Sidebar 的「51賽馬」連結，複製該場次的文字表格，貼在下方即可。")
+            
             with st.form(key=f"form_race_{selected_race}"):
                 c1, c2 = st.columns(2)
-                with c1: new_odds = st.text_area("賠率", value=current_race["raw_odds_text"], height=100)
-                with c2: new_info = st.text_area("排位", value=current_race["raw_info_text"], height=100)
+                with c1: new_odds = st.text_area("賠率數據", value=current_race["raw_odds_text"], height=150)
+                with c2: new_info = st.text_area("排位數據", value=current_race["raw_info_text"], height=150)
                 
+                # 自動抓取按鈕 (目前先用提示框代替真實爬蟲，因 Cloud 環境限制)
+                # if st.form_submit_button("⚡ 嘗試自動抓取", type="secondary"):
+                #     st.warning("Cloud 環境下 IP 可能受限，建議使用手動複製以確保穩定。")
+
                 if st.form_submit_button("🚀 發布更新", type="primary", use_container_width=True):
                     df_odds = parse_odds_data(new_odds)
                     if not df_odds.empty:
@@ -296,7 +329,7 @@ if app_mode == "📡 實時 (Live)":
                         current_race["raw_odds_text"] = new_odds
                         current_race["raw_info_text"] = new_info
                         current_race["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
-                        st.success("成功")
+                        st.success("成功更新")
                         st.rerun()
 
     st.markdown(f"#### 第 {selected_race} 場 (Live)")
