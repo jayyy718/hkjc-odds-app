@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.3"  # 更新：加入模擬數據模式 (Demo Mode)
+APP_VERSION = "V1.4"  # 更新：修復主頁字體顏色，強制為深色
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
@@ -117,7 +117,6 @@ def fetch_hkjc_data(race_no):
 def generate_demo_data():
     rows = []
     for i in range(1, 13):
-        # 隨機生成 1-12 號馬的賠率
         odds = round(random.uniform(1.5, 50.0), 1)
         rows.append({"馬號": i, "馬名": f"模擬馬 {i}", "現價": odds})
     return pd.DataFrame(rows)
@@ -210,15 +209,24 @@ st.set_page_config(page_title=f"賽馬智腦 {APP_VERSION}", layout="wide")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #f5f7f9; }
+    /* 1. 全局背景與字體顏色強制設定 */
+    .stApp, .stApp > header { 
+        background-color: #f5f7f9 !important; 
+    }
+    
+    /* 2. 強制所有文本顏色為黑色 (解決 Dark Mode 下看不見的問題) */
+    .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, 
+    .stMarkdown h4, .stMarkdown h5, .stMarkdown h6, .stMarkdown span,
+    .stText, .stCode, div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"] {
+        color: #000000 !important;
+    }
+    
+    /* 3. 強制 Sidebar 樣式 */
     section[data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e0e0e0;
     }
-    section[data-testid="stSidebar"] .stMarkdown p, 
-    section[data-testid="stSidebar"] label, 
-    section[data-testid="stSidebar"] span,
-    section[data-testid="stSidebar"] div {
+    section[data-testid="stSidebar"] * {
         color: #333333 !important;
     }
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
@@ -227,13 +235,46 @@ st.markdown("""
         color: #000000 !important;
         border: 1px solid #ccc !important;
     }
-    .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
-    .horse-card { background-color: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; margin-bottom: 8px; }
+
+    /* 4. DataFrame 表格樣式優化 */
+    div[data-testid="stDataFrame"] div[role="grid"] {
+        color: #000000 !important;
+        background-color: #ffffff !important;
+    }
+    
+    /* 5. 標題樣式 */
+    .main-title { 
+        color: #1a237e !important; 
+        font-weight: 800; 
+        font-size: 28px; 
+        letter-spacing: 1px; 
+    }
+    
+    /* 6. 卡片樣式 */
+    .horse-card { 
+        background-color: white; 
+        padding: 12px; 
+        border-radius: 6px; 
+        border: 1px solid #ddd; 
+        border-top: 4px solid #1a237e; 
+        margin-bottom: 8px; 
+        color: #000000 !important;
+    }
     .top-pick-card { border-top: 4px solid #c62828; }
+    
     .tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
     .tag-drop { background-color: #ffebee; color: #c62828; } 
     .tag-rise { background-color: #e8f5e9; color: #2e7d32; } 
     .tag-lvl { background-color: #1a237e; color: white; }
+    
+    /* 7. Tab 標籤顏色 */
+    div[data-baseweb="tab-list"] button {
+        color: #000000 !important;
+    }
+    div[data-baseweb="tab-list"] button[aria-selected="true"] {
+        color: #1a237e !important;
+        border-bottom-color: #1a237e !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -269,9 +310,8 @@ with st.sidebar:
             if ok: st.success(msg)
             else: st.warning(msg)
         
-        # 新增測試模式開關
         st.divider()
-        use_demo = st.checkbox("🧪 測試模式 (生成模擬數據)", help="在無賽事期間，用來測試介面顯示")
+        use_demo = st.checkbox("🧪 測試模式", help="無賽事時，生成模擬數據預覽介面")
 
 if app_mode == "📡 實時 (Live)":
     curr = race_storage[sel_race]
@@ -280,12 +320,10 @@ if app_mode == "📡 實時 (Live)":
     with c1:
         if st.button("🔄 立即更新賠率 (API)", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
-                # 測試模式：生成假數據
                 df_new = generate_demo_data()
                 err = None
-                time.sleep(0.5) # 模擬延遲
+                time.sleep(0.5)
             else:
-                # 正常模式：抓 API
                 df_new, err = fetch_hkjc_data(sel_race)
             
             if df_new is not None:
@@ -310,7 +348,7 @@ if app_mode == "📡 實時 (Live)":
                 st.rerun()
             else:
                 st.error(f"更新失敗：{err}")
-                st.caption("提示：目前可能非賽事時段，請開啟 Sidebar 底部的「🧪 測試模式」來預覽介面。")
+                st.caption("提示：目前非賽事時段，請嘗試開啟 Sidebar 的「🧪 測試模式」預覽。")
     
     with c2:
         st.info(f"賽事 {sel_race} | 上次更新: {curr['last_update']}")
@@ -358,10 +396,10 @@ if app_mode == "📡 實時 (Live)":
                             st.markdown(f"""
                             <div class="horse-card top-pick-card">
                                 <div style="display:flex; justify-content:space-between">
-                                    <b>#{r['馬號']} {r.get('馬名','')}</b>
+                                    <b style="color:#000;">#{r['馬號']} {r.get('馬名','')}</b>
                                     <span class="tag tag-lvl">{r['級別']}級</span>
                                 </div>
-                                <div style="font-size:20px; font-weight:bold; margin:8px 0">
+                                <div style="font-size:20px; font-weight:bold; margin:8px 0; color:#000;">
                                     {r['現價']} <span style="color:#c62828; float:right">{r['得分']}</span>
                                 </div>
                                 <div class="tag {tag_c}">{txt}</div>
@@ -375,7 +413,7 @@ if app_mode == "📡 實時 (Live)":
     else:
         st.info("⚠️ 暫無數據")
         if 'use_demo' in locals() and not use_demo:
-            st.warning("提示：目前可能無即時賠率。請嘗試開啟 Sidebar 的「🧪 測試模式」以預覽介面。")
+            st.warning("提示：請嘗試開啟 Sidebar 的「🧪 測試模式」以預覽介面。")
 
 elif app_mode == "📜 歷史 (History)":
     h_db = load_history_data()
