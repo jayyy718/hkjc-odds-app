@@ -192,6 +192,15 @@ def load_history_data():
         except: pass
     return {}
 
+def get_auto_version():
+    try:
+        # 讀取檔案修改時間
+        ts = os.path.getmtime(__file__)
+        dt = datetime.fromtimestamp(ts, tz=HKT)
+        return f"V1.{dt.strftime('%m%d.%H%M')}"
+    except:
+        return "V1.0"
+
 # ===================== 3. UI 界面 =====================
 st.set_page_config(page_title="HKJC 賽馬智腦 (Pro)", layout="wide")
 
@@ -214,7 +223,7 @@ st.markdown("""
         color: #333333 !important;
     }
     
-    /* Sidebar 輸入框優化 (避免輸入文字看不見) */
+    /* Sidebar 輸入框優化 */
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
     section[data-testid="stSidebar"] div[data-baseweb="base-input"] {
         background-color: #f0f2f6 !important;
@@ -235,10 +244,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
+APP_VER = get_auto_version()
+
+st.markdown(f"""
 <div style="border-bottom: 2px solid #1a237e; padding-bottom: 5px; margin-bottom: 10px;">
     <span class="main-title">賽馬智腦</span>
-    <span style="font-size:14px; color:#fff; background-color:#1a237e; padding:3px 8px; border-radius:4px; margin-left:8px; vertical-align:middle;">API Enhanced</span>
+    <span style="font-size:14px; color:#fff; background-color:#1a237e; padding:3px 8px; border-radius:4px; margin-left:8px; vertical-align:middle;">{APP_VER}</span>
 </div>
 """, unsafe_allow_html=True)
 
