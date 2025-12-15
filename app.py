@@ -5,11 +5,12 @@ import json
 import os
 import requests
 import time
+import random
 from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.2"  # 更新：Sidebar 場次標籤改為「賽事 X」
+APP_VERSION = "V1.3"  # 更新：加入模擬數據模式 (Demo Mode)
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
@@ -112,6 +113,15 @@ def fetch_hkjc_data(race_no):
         
     return None, "無有效賠率"
 
+# 模擬數據生成 (Demo Mode)
+def generate_demo_data():
+    rows = []
+    for i in range(1, 13):
+        # 隨機生成 1-12 號馬的賠率
+        odds = round(random.uniform(1.5, 50.0), 1)
+        rows.append({"馬號": i, "馬名": f"模擬馬 {i}", "現價": odds})
+    return pd.DataFrame(rows)
+
 # ===================== 2. 輔助函數 =====================
 def get_score(row):
     s = 0
@@ -200,35 +210,24 @@ st.set_page_config(page_title=f"賽馬智腦 {APP_VERSION}", layout="wide")
 
 st.markdown("""
 <style>
-    /* 1. 主背景 */
     .stApp { background-color: #f5f7f9; }
-    
-    /* 2. 強制 Sidebar 字體顏色為黑色，背景為白色 */
     section[data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e0e0e0;
     }
-    
-    /* Sidebar 內的所有文字強制變黑 */
     section[data-testid="stSidebar"] .stMarkdown p, 
     section[data-testid="stSidebar"] label, 
     section[data-testid="stSidebar"] span,
     section[data-testid="stSidebar"] div {
         color: #333333 !important;
     }
-    
-    /* Sidebar 輸入框優化 */
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
     section[data-testid="stSidebar"] div[data-baseweb="base-input"] {
         background-color: #f0f2f6 !important;
         color: #000000 !important;
         border: 1px solid #ccc !important;
     }
-
-    /* 3. 主標題樣式 */
     .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
-    
-    /* 4. 卡片與標籤 */
     .horse-card { background-color: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; margin-bottom: 8px; }
     .top-pick-card { border-top: 4px solid #c62828; }
     .tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
@@ -255,7 +254,6 @@ with st.sidebar:
     if app_mode == "📡 實時 (Live)":
         st.divider()
         st.markdown("**選擇場次**")
-        # 修改這裡：使用「賽事 1」格式
         sel_race = st.radio(
             "選擇場次", 
             options=list(range(1, 15)), 
@@ -270,6 +268,10 @@ with st.sidebar:
             ok, msg = save_history_data(race_storage)
             if ok: st.success(msg)
             else: st.warning(msg)
+        
+        # 新增測試模式開關
+        st.divider()
+        use_demo = st.checkbox("🧪 測試模式 (生成模擬數據)", help="在無賽事期間，用來測試介面顯示")
 
 if app_mode == "📡 實時 (Live)":
     curr = race_storage[sel_race]
@@ -277,7 +279,15 @@ if app_mode == "📡 實時 (Live)":
     c1, c2 = st.columns([1, 3])
     with c1:
         if st.button("🔄 立即更新賠率 (API)", type="primary", use_container_width=True):
-            df_new, err = fetch_hkjc_data(sel_race)
+            if 'use_demo' in locals() and use_demo:
+                # 測試模式：生成假數據
+                df_new = generate_demo_data()
+                err = None
+                time.sleep(0.5) # 模擬延遲
+            else:
+                # 正常模式：抓 API
+                df_new, err = fetch_hkjc_data(sel_race)
+            
             if df_new is not None:
                 if not curr["current_df"].empty:
                     old = curr["current_df"]
@@ -299,7 +309,8 @@ if app_mode == "📡 實時 (Live)":
                 time.sleep(0.5)
                 st.rerun()
             else:
-                st.error(err)
+                st.error(f"更新失敗：{err}")
+                st.caption("提示：目前可能非賽事時段，請開啟 Sidebar 底部的「🧪 測試模式」來預覽介面。")
     
     with c2:
         st.info(f"賽事 {sel_race} | 上次更新: {curr['last_update']}")
@@ -363,6 +374,8 @@ if app_mode == "📡 實時 (Live)":
             st.dataframe(df, use_container_width=True)
     else:
         st.info("⚠️ 暫無數據")
+        if 'use_demo' in locals() and not use_demo:
+            st.warning("提示：目前可能無即時賠率。請嘗試開啟 Sidebar 的「🧪 測試模式」以預覽介面。")
 
 elif app_mode == "📜 歷史 (History)":
     h_db = load_history_data()
@@ -371,7 +384,6 @@ elif app_mode == "📜 歷史 (History)":
         sel_d = st.selectbox("日期", dates)
         if sel_d:
             races = sorted([int(x) for x in h_db[sel_d].keys()])
-            # 歷史這裡也改成「賽事 X」
             sel_r = st.radio("場次", races, format_func=lambda x: f"賽事 {x}", horizontal=True)
             if sel_r:
                 raw = h_db[sel_d][str(sel_r)]["odds"]
