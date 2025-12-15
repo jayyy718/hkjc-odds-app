@@ -192,14 +192,40 @@ def load_history_data():
         except: pass
     return {}
 
-# ===================== 3. UI =====================
+# ===================== 3. UI 界面 =====================
 st.set_page_config(page_title="HKJC 賽馬智腦 (Pro)", layout="wide")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #f5f7f9; color: #000000 !important; font-family: sans-serif; }
-    section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #ddd; }
+    /* 1. 主背景 */
+    .stApp { background-color: #f5f7f9; }
+    
+    /* 2. 強制 Sidebar 字體顏色為黑色，背景為白色 */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff !important;
+        border-right: 1px solid #e0e0e0;
+    }
+    
+    /* Sidebar 內的所有文字強制變黑 */
+    section[data-testid="stSidebar"] .stMarkdown p, 
+    section[data-testid="stSidebar"] label, 
+    section[data-testid="stSidebar"] span,
+    section[data-testid="stSidebar"] div {
+        color: #333333 !important;
+    }
+    
+    /* Sidebar 輸入框優化 (避免輸入文字看不見) */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
+    section[data-testid="stSidebar"] div[data-baseweb="base-input"] {
+        background-color: #f0f2f6 !important;
+        color: #000000 !important;
+        border: 1px solid #ccc !important;
+    }
+
+    /* 3. 主標題樣式 */
     .main-title { color: #1a237e; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
+    
+    /* 4. 卡片與標籤 */
     .horse-card { background-color: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd; border-top: 4px solid #1a237e; margin-bottom: 8px; }
     .top-pick-card { border-top: 4px solid #c62828; }
     .tag { display: inline-block; padding: 2px 6px; border-radius: 2px; font-size: 11px; font-weight: bold; }
@@ -217,8 +243,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    app_mode = st.radio("功能", ["📡 實時 (Live)", "📜 歷史 (History)", "📈 今日總覽"])
+    st.markdown("### 模式 (Mode)")
+    app_mode = st.radio("功能選擇", ["📡 實時 (Live)", "📜 歷史 (History)", "📈 今日總覽"], label_visibility="collapsed")
     st.divider()
+    
     threshold = st.slider("TOP PICKS 門檻", 50, 90, 65)
     
     if app_mode == "📡 實時 (Live)":
