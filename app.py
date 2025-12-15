@@ -246,16 +246,17 @@ with st.sidebar:
         st.markdown("### 管理員")
         password = st.text_input("密碼", type="password")
         is_admin = (password == "jay123")
-                if is_admin:
-            # 修改這行：讓按鈕文字更清楚
-            if st.button("💾 封存今日所有賽事", use_container_width=True, help="點擊後將會把今天所有已輸入過數據的場次，一次性存入歷史資料庫。"):
+        
+        if is_admin:
+            if st.button("💾 封存今日所有賽事", use_container_width=True):
                 success, msg = save_daily_history(race_storage)
-                if success: st.success(f"已封存: {msg}")
+                if success: st.success(msg)
                 else: st.warning(msg)
-        # [手動刷新] 移除自動刷新，改為手動，徹底解決卡頓
+        
+        # 手動刷新按鈕
         if st.button("🔄 刷新頁面", type="primary", use_container_width=True):
             st.rerun()
-    
+            
     elif app_mode == "📜 歷史 (History)":
         st.divider()
         st.markdown("### 檔案 Archive")
@@ -266,6 +267,7 @@ with st.sidebar:
         else:
             st.warning("無紀錄")
             selected_date = None
+
 
 # ============= Live 模式 =============
 if app_mode == "📡 實時 (Live)":
