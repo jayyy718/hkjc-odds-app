@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.11"  # 更新：分段提供代碼以防止截斷錯誤
+APP_VERSION = "V1.12"  # 更新：分段修復截斷錯誤
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
@@ -49,7 +49,7 @@ race_storage = get_storage()
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-# ===================== 1. 核心 API (雙引擎版) =====================
+# ===================== 1. 核心 API (第一部分) =====================
 
 def fetch_from_json_api(session, race_no, date_str, venue):
     """嘗試從 JSON API 獲取"""
@@ -96,7 +96,6 @@ def fetch_from_html_scraping(session, race_no, date_str, venue):
         resp = session.get(url, params=params, headers=HEADERS, timeout=8)
         if resp.status_code == 200:
             odds_list = []
-            
             pattern = r'id="win_odds_(\d+)"[^>]*>([\d\.]+)<'
             matches = re.findall(pattern, resp.text)
             
@@ -131,6 +130,8 @@ def fetch_from_html_scraping(session, race_no, date_str, venue):
         pass
     return None
 
+# ===================== 1. 核心 API (第二部分) =====================
+
 def fetch_hkjc_data(race_no, target_date):
     date_str = target_date.strftime("%Y-%m-%d")
     session = requests.Session()
@@ -144,6 +145,7 @@ def fetch_hkjc_data(race_no, target_date):
     last_error = ""
     
     for venue in venues:
+        # 這裡就是之前容易斷掉的地方
         odds_data = fetch_from_json_api(session, race_no, date_str, venue)
         
         if not odds_
@@ -158,7 +160,6 @@ def fetch_hkjc_data(race_no, target_date):
 
     return None, f"更新失敗: {last_error}"
 
-# 模擬數據生成 (Demo Mode)
 def generate_demo_data():
     rows = []
     for i in range(1, 13):
