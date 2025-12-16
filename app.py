@@ -4,11 +4,10 @@ import numpy as np
 import re
 from datetime import datetime
 
-# ===================== V1.74 (Global Shared Database) =====================
-# 核心修復：使用 @st.cache_resource 建立「全域資料庫」。
-# 效果：管理員在自己的電腦上發布資料，其他用戶在別的電腦上也能即時看到。
+# ===================== V1.75 (Official Release) =====================
+# 新增功能：後台「重置資料庫」按鈕，用於清空測試數據，開始新賽日輸入。
 
-st.set_page_config(page_title="賽馬智腦 V1.74", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.75", layout="wide")
 
 # --- 核心數據 (不變) ---
 REAL_STATS = {
@@ -87,27 +86,26 @@ def parse_odds_strict_sequence(text):
         else: i += 1
     return odds_map
 
-# ===================== [關鍵] 全域資料庫 =====================
-
-# 使用 Singleton 模式創建一個簡單的 Class 來儲存資料
+# ===================== 全域資料庫 =====================
 class RaceDatabase:
     def __init__(self):
-        self.races = {} # { "2025-12-17_Race_1": data }
+        self.races = {} 
+    
+    # 新增：清空資料庫方法
+    def clear_all(self):
+        self.races = {}
 
-# 使用 cache_resource 確保這個物件是全伺服器唯一的
 @st.cache_resource
 def get_database():
     return RaceDatabase()
 
-# 獲取全域資料庫實例
 db = get_database()
 
-# Session State 僅用於當前用戶的 UI 狀態 (例如登入狀態、輸入框內容)
 if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'] = False
 if 'current_edit_info' not in st.session_state: st.session_state['current_edit_info'] = {"date": datetime.now().date(), "no": 1}
 
 # ===================== UI =====================
-st.sidebar.title("🏇 賽馬智腦 V1.74")
+st.sidebar.title("🏇 賽馬智腦 V1.75")
 page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
 
 if page == "🔒 後台管理":
@@ -118,6 +116,13 @@ if page == "🔒 後台管理":
             st.session_state['admin_logged_in'] = True
             st.rerun()
     else:
+        # --- 重置按鈕區 ---
+        with st.expander("⚠️ 危險操作區"):
+            if st.button("🗑️ 清空所有賽事資料 (重置系統)", type="secondary"):
+                db.clear_all()
+                st.success("資料庫已清空，您可以開始輸入新賽日的資料了。")
+                st.rerun()
+                
         st.subheader("1. 選擇要編輯的場次")
         c_d, c_r = st.columns(2)
         with c_d: 
@@ -132,13 +137,13 @@ if page == "🔒 後台管理":
         
         c1, c2 = st.columns(2)
         with c1: 
-            st.info("排位表 (最終版格式)")
+            st.info("排位表")
             card_in = st.text_area("排位文字", height=300, key=f"card_{race_key}")
         with c2: 
-            st.info("賠率 (垂直格式)")
+            st.info("賠率")
             odds_in = st.text_area("賠率文字", height=300, key=f"odds_{race_key}")
             
-        if st.button(f"🚀 發布第 {r_in} 場資料 (全網同步)", type="primary"):
+        if st.button(f"🚀 發布第 {r_in} 場資料", type="primary"):
             df = parse_card_v172(card_in)
             if not df.empty:
                 if odds_in:
@@ -152,7 +157,6 @@ if page == "🔒 後台管理":
                 total = sum(scores)
                 df['勝率%'] = (df['AI分數']/total*100).round(1) if total>0 else 0.0
                 
-                # [關鍵] 寫入全域資料庫
                 db.races[race_key] = {
                     "df": df,
                     "date": str(d_in),
@@ -161,16 +165,13 @@ if page == "🔒 後台管理":
                 }
                 
                 st.session_state['current_edit_info'] = {"date": d_in, "no": r_in}
-                st.success(f"成功！資料已同步到伺服器，其他用戶重整頁面後即可看到。")
+                st.success(f"成功發布！目前資料庫共有 {len(db.races)} 場比賽。")
             else: st.error("排位表解析失敗")
 
 else:
-    # --- 公眾看板 ---
     st.title("📊 賽事分析中心")
-    
-    # 從全域資料庫讀取
     if not db.races:
-        st.info("📭 暫無資料。管理員發布後，資料會自動出現在這裡。")
+        st.info("📭 目前暫無資料。請管理員輸入新賽事。")
     else:
         race_keys = list(db.races.keys())
         race_keys.sort()
@@ -201,7 +202,7 @@ else:
             df[display_cols],
             column_config={
                 "勝率%": st.column_config.ProgressColumn("AI 勝率", format="%.1f%%", min_value=0, max_value=100),
-                "獨贏": st.column_config.TextColumn("賠率"),
+                "獨贏": st.column_config.TextColumn("獨贏賠率"),
                 "馬號": st.column_config.NumberColumn("No.", format="%d"),
             },
             use_container_width=True,
