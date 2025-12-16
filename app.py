@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.10"  # 更新：修復變數截斷錯誤，完整 HTML 爬蟲邏輯
+APP_VERSION = "V1.11"  # 更新：分段提供代碼以防止截斷錯誤
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
@@ -57,7 +57,6 @@ def fetch_from_json_api(session, race_no, date_str, venue):
     params = {"type": "winodds", "date": date_str, "venue": venue, "start": race_no, "end": race_no}
     
     try:
-        # JSON API 需要特定的 Referer
         json_headers = HEADERS.copy()
         json_headers["Referer"] = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en"
         json_headers["X-Requested-With"] = "XMLHttpRequest"
@@ -98,7 +97,6 @@ def fetch_from_html_scraping(session, race_no, date_str, venue):
         if resp.status_code == 200:
             odds_list = []
             
-            # 1. 嘗試正則匹配 HTML 標籤
             pattern = r'id="win_odds_(\d+)"[^>]*>([\d\.]+)<'
             matches = re.findall(pattern, resp.text)
             
@@ -113,7 +111,6 @@ def fetch_from_html_scraping(session, race_no, date_str, venue):
                 if odds_list:
                     return odds_list
             
-            # 2. 嘗試正則匹配 JS 變數
             js_pattern = r'winodds\s*=\s*"([^"]+)"'
             js_match = re.search(js_pattern, resp.text)
             if js_match:
@@ -130,20 +127,15 @@ def fetch_from_html_scraping(session, race_no, date_str, venue):
                             except: pass
                 if odds_list:
                     return odds_list
-
     except Exception as e:
-        print(f"HTML Scraping Error: {e}")
         pass
     return None
 
 def fetch_hkjc_data(race_no, target_date):
     date_str = target_date.strftime("%Y-%m-%d")
-    
-    # 建立 Session
     session = requests.Session()
     session.headers.update(HEADERS)
     
-    # 先訪問首頁拿 Cookie
     try:
         session.get("https://bet.hkjc.com/index.aspx?lang=en", timeout=5)
     except: pass
@@ -152,11 +144,8 @@ def fetch_hkjc_data(race_no, target_date):
     last_error = ""
     
     for venue in venues:
-        # 方法 1: 嘗試 JSON API
         odds_data = fetch_from_json_api(session, race_no, date_str, venue)
         
-        # 方法 2: 如果 JSON 失敗，嘗試 HTML 爬蟲
-        # 這裡就是之前出錯的地方，現在修復了
         if not odds_
             odds_data = fetch_from_html_scraping(session, race_no, date_str, venue)
         
@@ -167,7 +156,7 @@ def fetch_hkjc_data(race_no, target_date):
         else:
             last_error = "兩種方法皆無法獲取數據"
 
-    return None, f"更新失敗: {last_error} (請確認日期與場次是否正確)"
+    return None, f"更新失敗: {last_error}"
 
 # 模擬數據生成 (Demo Mode)
 def generate_demo_data():
@@ -176,6 +165,8 @@ def generate_demo_data():
         odds = round(random.uniform(1.5, 50.0), 1)
         rows.append({"馬號": i, "馬名": f"模擬馬 {i}", "現價": odds})
     return pd.DataFrame(rows)
+
+
 
 # ===================== 2. 輔助函數 =====================
 def get_score(row):
@@ -265,27 +256,17 @@ st.set_page_config(page_title=f"賽馬智腦 {APP_VERSION}", layout="wide")
 
 st.markdown("""
 <style>
-    /* 1. 全局背景與字體顏色強制設定 */
-    .stApp, .stApp > header { 
-        background-color: #f5f7f9 !important; 
-    }
-    
-    /* 2. 強制所有文本顏色為黑色 */
+    .stApp, .stApp > header { background-color: #f5f7f9 !important; }
     .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, 
     .stMarkdown h4, .stMarkdown h5, .stMarkdown h6, .stMarkdown span,
     .stText, .stCode, div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"],
-    .stCaption {
-        color: #000000 !important;
-    }
+    .stCaption { color: #000000 !important; }
     
-    /* 3. 強制 Sidebar 樣式 */
     section[data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e0e0e0;
     }
-    section[data-testid="stSidebar"] * {
-        color: #333333 !important;
-    }
+    section[data-testid="stSidebar"] * { color: #333333 !important; }
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
     section[data-testid="stSidebar"] div[data-baseweb="base-input"] {
         background-color: #f0f2f6 !important;
@@ -293,13 +274,11 @@ st.markdown("""
         border: 1px solid #ccc !important;
     }
 
-    /* 4. DataFrame 表格樣式優化 */
     div[data-testid="stDataFrame"] div[role="grid"] {
         color: #000000 !important;
         background-color: #ffffff !important;
     }
     
-    /* 5. 標題樣式 */
     .main-title { 
         color: #1a237e !important; 
         font-weight: 800; 
@@ -307,7 +286,6 @@ st.markdown("""
         letter-spacing: 1px; 
     }
     
-    /* 6. 卡片樣式 */
     .horse-card { 
         background-color: white; 
         padding: 12px; 
@@ -323,16 +301,12 @@ st.markdown("""
     .tag-drop { background-color: #ffebee; color: #c62828 !important; } 
     .tag-rise { background-color: #e8f5e9; color: #2e7d32 !important; } 
     
-    /* 評級標籤強制白字 */
     .tag-lvl { 
         background-color: #1a237e; 
         color: #ffffff !important; 
     }
     
-    /* 7. Tab 標籤顏色 */
-    div[data-baseweb="tab-list"] button {
-        color: #000000 !important;
-    }
+    div[data-baseweb="tab-list"] button { color: #000000 !important; }
     div[data-baseweb="tab-list"] button[aria-selected="true"] {
         color: #1a237e !important;
         border-bottom-color: #1a237e !important;
@@ -523,3 +497,4 @@ elif app_mode == "📈 今日總覽":
             st.table(res_df.sort_values("場次"))
     else:
         st.info("今日尚未封存數據")
+
