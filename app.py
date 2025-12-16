@@ -9,8 +9,8 @@ import random
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.26 (Content-Aware) =====================
-APP_VERSION = "V1.26 (Content Sniffer)"
+# ===================== 版本 V1.27 (Positional Mapping) =====================
+APP_VERSION = "V1.27 (Force Index)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
@@ -34,76 +34,10 @@ def get_storage():
 
 race_storage = get_storage()
 
-# 擴充名單用於識別
-JOCKEY_KEYWORDS = ['Purton', 'McDonald', 'Bowman', 'Teetan', 'Ho', 'Bentley', 'Badel', 'Chung', 'Poon', 'Yeung', 'Ferraris', 'Hamelin', 'Atzeni', 'De Sousa', 'Avdulla', 'Mo', 'Wong', 'Chau']
-TRAINER_KEYWORDS = ['Size', 'Lui', 'Hayes', 'Lor', 'Yip', 'Yiu', 'Fownes', 'Whyte', 'Hall', 'Newnham', 'Richards', 'Man', 'Shum', 'So', 'Tsui', 'Ng', 'Chang']
-
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-def identify_columns(df):
-    """分析第一行數據來猜測欄位"""
-    mapping = {}
-    if df.empty: return mapping
-    
-    # 取第一行非空值
-    first_row = df.iloc[0]
-    
-    for idx, col_name in enumerate(df.columns):
-        val = str(first_row[idx]).strip()
-        col_name_lower = str(col_name).lower()
-        
-        # 1. 識別馬號 (通常是 1, 2... 且在最左邊)
-        if "No" not in mapping:
-            if str(val) == "1" or "no" in col_name_lower:
-                mapping["No"] = col_name
-                continue
-                
-        # 2. 識別馬名
-        if "Horse" not in mapping:
-            if "horse" in col_name_lower:
-                mapping["Horse"] = col_name
-                continue
-            # 如果內容包含英文單字且不是騎師練馬師
-            if re.match(r'^[A-Z][a-z]+(\s[A-Z][a-z]+)*$', val) and len(val) > 3:
-                # 排除騎師練馬師
-                if not any(k in val for k in JOCKEY_KEYWORDS + TRAINER_KEYWORDS):
-                    mapping["Horse"] = col_name
-                    continue
-
-        # 3. 識別騎師
-        if "Jockey" not in mapping:
-            if "jockey" in col_name_lower:
-                mapping["Jockey"] = col_name
-                continue
-            if any(k in val for k in JOCKEY_KEYWORDS):
-                mapping["Jockey"] = col_name
-                continue
-
-        # 4. 識別練馬師
-        if "Trainer" not in mapping:
-            if "trainer" in col_name_lower:
-                mapping["Trainer"] = col_name
-                continue
-            if any(k in val for k in TRAINER_KEYWORDS):
-                mapping["Trainer"] = col_name
-                continue
-
-        # 5. 識別賠率 (數字，有小數點，且不是負數)
-        if "Odds" not in mapping:
-            if "win" in col_name_lower or "odds" in col_name_lower:
-                mapping["Odds"] = col_name
-                continue
-            if re.match(r'^\d+\.\d+$', val):
-                try:
-                    f = float(val)
-                    if 1.0 < f < 100.0:
-                        mapping["Odds"] = col_name
-                except: pass
-
-    return mapping
-
-def fetch_scmp_smart(r_no, t_date):
+def fetch_scmp_force_index(r_no, t_date):
     date_str = t_date.strftime("%Y%m%d")
     url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
     logs = [f"SCMP: {url}"]
@@ -114,61 +48,74 @@ def fetch_scmp_smart(r_no, t_date):
             dfs = pd.read_html(resp.text)
             logs.append(f"找到 {len(dfs)} 個表格")
             
-            # 尋找行數最多的表格
+            # 尋找行數合理的表格 (6-16行)
             target_df = None
-            max_rows = 0
             for df in dfs:
-                if len(df) > max_rows and len(df) <= 16:
-                    max_rows = len(df)
+                if len(df) >= 6 and len(df) <= 16:
                     target_df = df
+                    break # 找到第一個就假設它是排位表
             
             if target_df is not None:
-                logs.append(f"-> 鎖定 {max_rows} 行的表格，開始智能識別...")
+                logs.append(f"-> 鎖定 {len(target_df)} 行表格")
                 
-                # 進行欄位識別
-                col_map = identify_columns(target_df)
-                logs.append(f"識別結果: {col_map}")
+                # Debug: 印出前兩行數據，讓我們確認欄位位置
+                if not target_df.empty:
+                    preview = target_df.iloc[:2].to_string()
+                    logs.append(f"表格預覽:\n{preview}")
+
+                # === 強制位置提取 (根據觀察) ===
+                # SCMP 通常結構: [0]No [1]LastRuns [2]Horse [3]Draw [4]Gear [5]Jockey [6]Trainer
+                # 但有時候會多一欄空欄，所以我們做個檢查
                 
                 res = []
-                row_idx = 1
-                for _, row in target_df.iterrows():
+                cols_count = len(target_df.columns)
+                
+                for idx, row in target_df.iterrows():
                     try:
-                        # 馬號
-                        h_no = row_idx
-                        if "No" in col_map:
-                            m = re.search(r'\d+', str(row[col_map["No"]]))
+                        # 1. 馬號 (通常在第 0 欄)
+                        h_no = idx + 1 # 預設用行號
+                        if cols_count > 0:
+                            val = str(row.iloc[0])
+                            m = re.search(r'\d+', val)
                             if m: h_no = int(m.group(0))
                         
-                        # 馬名
+                        # 2. 馬名 (通常在第 2 欄，有時候是第 1 欄)
                         name = f"馬匹 {h_no}"
-                        if "Horse" in col_map: name = str(row[col_map["Horse"]])
-                        
-                        # 騎師/練馬師
-                        jock = str(row[col_map["Jockey"]]) if "Jockey" in col_map else "未知"
-                        trn = str(row[col_map["Trainer"]]) if "Trainer" in col_map else "未知"
-                        
-                        # 賠率
-                        odds = 0.0
-                        if "Odds" in col_map:
-                            m = re.search(r'(\d+\.\d+|\d+)', str(row[col_map["Odds"]]))
-                            if m: odds = float(m.group(1))
+                        if cols_count > 2:
+                            val = str(row.iloc[2])
+                            # 如果第2欄看起來像數字(Draw)，那馬名可能在第1欄
+                            if re.match(r'^\d+$', val) and cols_count > 1:
+                                name = str(row.iloc[1])
+                            else:
+                                name = val
+                                
+                        # 3. 騎師 (通常在第 5 欄)
+                        jock = "未知"
+                        if cols_count > 5:
+                            jock = str(row.iloc[5])
                             
+                        # 4. 練馬師 (通常在第 6 欄)
+                        trn = "未知"
+                        if cols_count > 6:
+                            trn = str(row.iloc[6])
+
+                        # 清理數據
+                        # 移除括號內容 (例如 "Z Purton (2)") -> "Z Purton"
+                        jock = re.sub(r'\s*\(\d+\)', '', jock)
+                        
                         res.append({
                             "馬號": h_no,
                             "馬名": name,
                             "騎師": jock,
                             "練馬師": trn,
-                            "現價": odds
+                            "現價": 0.0 # 稍後補位
                         })
-                        row_idx += 1
                     except: pass
                 
                 if res:
                     return pd.DataFrame(res), "\n".join(logs)
-                else:
-                    logs.append("解析後無數據")
             else:
-                logs.append("找不到合適行數的表格")
+                logs.append("找不到適合行數的表格")
     except Exception as e:
         logs.append(f"SCMP Error: {e}")
         
@@ -188,29 +135,37 @@ def fetch_hkjc_odds_fallback(r_no):
         for m in matches:
             odds_map[int(m[0])] = float(m[1])
             
+        if not odds_map:
+            matches = re.findall(r'"(\d+)":"([\d\.]+)"', resp.text)
+            for m in matches:
+                odds_map[int(m[0])] = float(m[1])
+
         if odds_map: logs.append(f"HKJC 補位成功: {len(odds_map)} 筆")
+        else: logs.append("HKJC 補位失敗 (無數據或被擋)")
             
-    except: pass
+    except Exception as e:
+        logs.append(f"HKJC Conn Error: {e}")
     return odds_map, "\n".join(logs)
 
 def fetch_data(r_no, t_date):
     full_log = "=== 開始更新 ===\n"
     
-    # 1. SCMP 智能抓取
-    df, log = fetch_scmp_smart(r_no, t_date)
+    # 1. SCMP 強制位置抓取
+    df, log = fetch_scmp_force_index(r_no, t_date)
     full_log += log + "\n"
     
     if df is None or df.empty:
-        return None, full_log + "SCMP 失敗\n"
+        return None, full_log + "SCMP 解析失敗\n"
     
-    # 2. 如果 SCMP 沒抓到賠率，嘗試 HKJC 補位
-    if df["現價"].sum() == 0:
-        full_log += "SCMP 無賠率，嘗試 HKJC 補位...\n"
-        odds_map, log_jc = fetch_hkjc_odds_fallback(r_no)
-        full_log += log_jc + "\n"
-        
-        if odds_map:
-            df["現價"] = df["馬號"].map(odds_map).fillna(0.0)
+    # 2. 嘗試 HKJC 補位
+    full_log += "--- 嘗試 HKJC 補位 ---\n"
+    odds_map, log_jc = fetch_hkjc_odds_fallback(r_no)
+    full_log += log_jc + "\n"
+    
+    if odds_map:
+        df["現價"] = df["馬號"].map(odds_map).fillna(0.0)
+    else:
+        full_log += "警告：無法獲取實時賠率\n"
     
     return df, full_log
 
@@ -337,7 +292,7 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 更新 (內容感知版)", type="primary", use_container_width=True):
+        if st.button("🔄 強制映射更新", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
                 log = "Demo"
@@ -366,7 +321,7 @@ if app_mode == "📡 實時":
     
     with c2: 
         st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-        with st.expander("📝 識別日誌 (Identify Log)", expanded=True):
+        with st.expander("📝 映射日誌 (Mapping Log)", expanded=True):
             st.code(curr["debug_info"])
 
     with st.expander("🛠️ 排位資料"):
