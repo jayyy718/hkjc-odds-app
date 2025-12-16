@@ -10,16 +10,14 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.32 (Text Mining) =====================
-APP_VERSION = "V1.32 (Text Mining)"
+# ===================== 版本 V1.33 (Syntax Fixed) =====================
+APP_VERSION = "V1.33 (Stable Text Mining)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 偽裝 headers
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
 }
 
 @st.cache_resource
@@ -37,7 +35,6 @@ def get_storage():
 
 race_storage = get_storage()
 
-# 擴充關鍵字庫 (包含全名與縮寫)
 JOCKEY_DB = [
     'Z Purton', 'Purton', 'J McDonald', 'McDonald', 'H Bowman', 'Bowman', 
     'K Teetan', 'Teetan', 'C Y Ho', 'Ho', 'L Ferraris', 'Ferraris', 
@@ -55,7 +52,6 @@ TRAINER_DB = [
     'Y S Tsui', 'Tsui', 'C H Yip', 'Yip', 'C W Chang', 'Chang'
 ]
 
-# 評分權重
 JOCKEY_RANK = {'Purton': 9.5, 'McDonald': 9.0, 'Bowman': 8.5, 'Teetan': 7.5, 'Ho': 8.0, 'Ferraris': 6.5, 'Bentley': 7.0}
 TRAINER_RANK = {'Size': 9.0, 'Lui': 8.5, 'Ng': 8.5, 'Lor': 8.0, 'Shum': 8.0, 'Yiu': 7.5, 'Cruz': 8.5, 'Fownes': 8.0}
 
@@ -63,30 +59,23 @@ def extract_horse_data_from_text(text):
     """從純文字中挖掘馬匹數據"""
     lines = text.split('\n')
     res = []
-    
-    # 狀態機
     current_horse = {}
     
-    # 用正則尋找每一匹馬的開頭： "數字 + 空格 + 馬名(全大寫)"
-    # 例如: "1  ROMANTIC WARRIOR"
+    # 匹配 "1  ROMANTIC WARRIOR"
     horse_pattern = re.compile(r'^(\d{1,2})\s+([A-Z\s\']{3,30})$')
     
     for line in lines:
         line = line.strip()
         if not line: continue
         
-        # 嘗試匹配馬號與馬名
         m = horse_pattern.match(line)
         if m:
-            # 如果之前有抓到馬，先存起來
             if current_horse:
                 res.append(current_horse)
             
-            # 開始新的一匹馬
             h_no = int(m.group(1))
             h_name = m.group(2).strip()
             
-            # 排除標題行 (如 "1 HORSE NAME")
             if h_name not in ["HORSE", "JOCKEY", "TRAINER", "LAST RUNS"]:
                 current_horse = {
                     "馬號": h_no,
@@ -96,7 +85,6 @@ def extract_horse_data_from_text(text):
                     "現價": 0.0
                 }
         
-        # 如果正在處理某匹馬，嘗試在後續行中找騎師/練馬師/賠率
         elif current_horse:
             # 找騎師
             if current_horse["騎師"] == "未知":
@@ -112,23 +100,20 @@ def extract_horse_data_from_text(text):
                         current_horse["練馬師"] = t
                         break
                         
-            # 找賠率 (行內唯一的數字且帶小數點)
+            # 找賠率
             if current_horse["現價"] == 0.0:
-                # 排除像 "118" (磅位) 或 "60" (評分) 這種整數
                 odds_match = re.search(r'\b(\d+\.\d+)\b', line)
                 if odds_match:
                     val = float(odds_match.group(1))
                     if 1.0 < val < 200.0:
                         current_horse["現價"] = val
 
-    # 加入最後一匹
     if current_horse:
         res.append(current_horse)
         
     return res
 
 def fetch_scmp_text_mining(r_no, t_date):
-    """SCMP 純文字挖掘模式"""
     date_str = t_date.strftime("%Y%m%d")
     url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
     logs = [f"SCMP Text: {url}"]
@@ -138,12 +123,12 @@ def fetch_scmp_text_mining(r_no, t_date):
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # 提取主要內容區塊 (避免導航欄干擾)
+            # 嘗試抓取主要內容
             main_content = soup.find('div', class_='racecard') 
             if not main_content:
                 main_content = soup.find('body')
-                
-            # 轉為純文字，保留換行
+            
+            # 取得純文字
             raw_text = main_content.get_text(separator='\n')
             
             # 開始挖掘
@@ -155,7 +140,6 @@ def fetch_scmp_text_mining(r_no, t_date):
                 return df, "\n".join(logs)
             else:
                 logs.append("挖掘失敗，找不到馬匹模式")
-                # Debug: 印出部分文字
                 logs.append(f"Text Preview: {raw_text[:200]}...")
                 
         else:
@@ -166,7 +150,7 @@ def fetch_scmp_text_mining(r_no, t_date):
         
     return None, "\n".join(logs)
 def fetch_hkjc_fallback_log(r_no):
-    """只記錄 HKJC 狀態，不依賴"""
+    """只記錄 HKJC 狀態"""
     url = "https://bet.hkjc.com/racing/jsonData.aspx"
     try:
         params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
@@ -175,31 +159,26 @@ def fetch_hkjc_fallback_log(r_no):
     return {}
 
 def fetch_data(r_no, t_date):
-    full_log = "=== 開始更新 (V1.32) ===\n"
+    full_log = "=== 開始更新 (V1.33) ===\n"
     
     # 1. SCMP 純文字挖掘
     df, log = fetch_scmp_text_mining(r_no, t_date)
     full_log += log + "\n"
     
     if df is not None and not df.empty:
-        # 賠率補救 (如果 SCMP 沒賠率)
+        # 賠率補救
         if df["現價"].sum() == 0:
             full_log += "SCMP 無賠率，嘗試 HKJC 備用通道...\n"
             try:
-                # 嘗試新的 API 端點 (有時候 bet.hkjc.com 會擋，但其他子網域不會)
-                # 這裡我們試試直接抓 XML (如果有的話) 或者舊版 JSON
-                # 為了避免複雜，這裡還是用 requests 試最後一次
                 url = "https://bet.hkjc.com/racing/jsonData.aspx"
                 params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
                 resp = requests.get(url, params=params, headers=HEADERS, timeout=3)
                 
                 odds_map = {}
-                # 寬鬆的正則表達式
                 matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
                 for m in matches: odds_map[int(m[0])] = float(m[1])
                 
                 if not odds_map:
-                    # JSON 格式
                     matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
                     for m in matches: odds_map[int(m[0])] = float(m[1])
 
@@ -228,7 +207,6 @@ def get_score(row):
     j = str(row.get("騎師", ""))
     t = str(row.get("練馬師", ""))
     
-    # 模糊匹配評分
     for k, v in JOCKEY_RANK.items():
         if k in j: s += v * 2.5
     for k, v in TRAINER_RANK.items():
