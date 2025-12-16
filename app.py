@@ -8,23 +8,18 @@ import time
 import random
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
+import lxml
+import html5lib
 
-# ===================== 版本 V1.16 (資訊網策略) =====================
-APP_VERSION = "V1.16"
+# ===================== 版本 V1.17 (HTML 結構診斷) =====================
+APP_VERSION = "V1.17 (Debug Structure)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 資訊網的 Headers 可以簡單一點
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 }
-
-@st.cache_resource
-def get_regex():
-    return (re.compile(r'^\d+$'), re.compile(r'\d+\.?\d*'), re.compile(r'[\u4e00-\u9fa5]+'))
-
-REGEX_INT, REGEX_FLOAT, REGEX_CHN = get_regex()
 
 @st.cache_resource
 def get_storage():
@@ -44,88 +39,49 @@ race_storage = get_storage()
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-def fetch_racing_info_odds(session, r_no, d_obj):
-    # 轉換日期格式 YYYY/MM/DD
-    date_str = d_obj.strftime("%Y/%m/%d")
-    
-    # 資訊網 URL 結構
+def fetch_debug_structure(r_no, t_date):
+    date_str = t_date.strftime("%Y/%m/%d")
     url = "https://racing.hkjc.com/racing/information/Chinese/Racing/Local/Odds.aspx"
-    
-    # 我們不確定場地是 ST 還是 HV，所以兩個都試，或者不傳 Racecourse 參數（有時系統會自動導向）
-    # 但通常必須傳。我們先試 HV (因為這週三通常是 HV)，再試 ST。
     venues = ["HV", "ST"]
     
-    last_err = ""
+    logs = []
+    
+    s = requests.Session()
     
     for ven in venues:
-        params = {
-            "RaceDate": date_str,
-            "Racecourse": ven,
-            "RaceNo": r_no
-        }
+        logs.append(f"=== 嘗試場地: {ven}, 日期: {date_str}, 場次: {r_no} ===")
+        params = {"RaceDate": date_str, "Racecourse": ven, "RaceNo": r_no}
         
         try:
-            # 請求網頁
-            resp = session.get(url, params=params, headers=HEADERS, timeout=8)
+            resp = s.get(url, params=params, headers=HEADERS, timeout=10)
+            logs.append(f"HTTP 狀態: {resp.status_code}")
             
-            # 如果成功
             if resp.status_code == 200:
-                # 使用 Pandas 強力解析 HTML Table
-                # 尋找包含 "馬號" 或 "Horse No" 的表格
-                try:
-                    dfs = pd.read_html(resp.text)
-                    for df in dfs:
-                        # 檢查關鍵欄位 (資訊網通常有 "馬號", "馬名", "獨贏")
-                        # 欄位名稱可能是中文或英文，視 URL 而定 (這裡用 Chinese)
-                        cols = [str(c) for c in df.columns]
-                        if any("馬號" in c for c in cols) and any("獨贏" in c for c in cols):
-                            # 找到了！清理數據
-                            # 統一欄位名稱
-                            df.columns = [c.replace("獨贏", "現價").replace("賠率", "現價") for c in df.columns]
-                            
-                            # 過濾掉已退出的馬 (現價可能是 "SCR" 或 "-")
-                            valid_rows = []
-                            for _, row in df.iterrows():
-                                try:
-                                    h_no = int(row["馬號"])
-                                    # 處理賠率，有時是 "9.5", 有時是 "9.5\n-5%"
-                                    raw_odds = str(row["現價"])
-                                    # 提取數字
-                                    odds_match = re.search(r'(\d+\.\d+|\d+)', raw_odds)
-                                    if odds_match:
-                                        odds_val = float(odds_match.group(1))
-                                        if odds_val < 900:
-                                            # 嘗試抓馬名
-                                            h_name = row.get("馬名", f"馬匹 {h_no}")
-                                            valid_rows.append({
-                                                "馬號": h_no,
-                                                "馬名": h_name,
-                                                "現價": odds_val
-                                            })
-                                except: pass
-                            
-                            if valid_rows:
-                                return pd.DataFrame(valid_rows), None
-                except ValueError:
-                    # read_html 找不到表格
-                    pass
-            else:
-                last_err = f"HTTP {resp.status_code}"
+                t_match = re.search(r'<title>(.*?)</title>', resp.text)
+                if t_match:
+                    logs.append(f"網頁標題: {t_match.group(1)}")
                 
-        except Exception as e:
-            last_err = str(e)
+                try:
+                    dfs = pd.read_html(resp.content, flavor='html5lib')
+                    logs.append(f"找到 {len(dfs)} 個表格")
+                    
+                    for i, df in enumerate(dfs):
+                        cols = list(df.columns)
+                        cols_str = str(cols)[:100]
+                        logs.append(f"表格 #{i+1} 欄位: {cols_str}")
+                        
+                        if not df.empty:
+                            first_row = str(df.iloc[0].values)[:100]
+                            logs.append(f"表格 #{i+1} 第一行: {first_row}")
+                            
+                except Exception as e:
+                    logs.append(f"Pandas 解析失敗: {str(e)}")
+                    logs.append(f"HTML Preview: {resp.text[:500]}")
             
-    return None, f"無法從資訊網獲取 (錯誤: {last_err})"
-
-def fetch_data(r_no, t_date):
-    s = requests.Session()
-    # 嘗試從資訊網抓取
-    df, err = fetch_racing_info_odds(s, r_no, t_date)
-    
-    if df is not None:
-        return df, None
-    
-    return None, err
+        except Exception as e:
+            logs.append(f"請求錯誤: {str(e)}")
+            
+    return None, "\n".join(logs)
 def gen_demo():
     rows = []
     for i in range(1, 13):
@@ -137,13 +93,11 @@ def get_score(row):
     o = row.get("現價", 0)
     if o > 0 and o <= 5.0: s += 25
     elif o > 5.0 and o <= 10.0: s += 10
-    
     tr = row.get("走勢", 0)
     if tr >= 15: s += 50
     elif tr >= 10: s += 35
     elif tr >= 5: s += 20
     elif tr <= -10: s -= 20
-    
     j = str(row.get("騎師", ""))
     t = str(row.get("練馬師", ""))
     for k, v in JOCKEY_RANK.items():
@@ -250,118 +204,23 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 更新賠率 (資訊網)", type="primary", use_container_width=True):
+        if st.button("🔄 執行診斷", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
-                err = None
+                log = "Demo"
                 time.sleep(0.5)
             else:
-                df_new, err = fetch_data(sel_race, sel_date)
+                df_new, log = fetch_debug_structure(sel_race, sel_date)
             
-            if df_new is not None:
-                if not curr["current_df"].empty:
-                    old = curr["current_df"]
-                    if "騎師" in old.columns:
-                        info_cols = old[["馬號", "騎師", "練馬師"]]
-                        df_new = df_new.merge(info_cols, on="馬號", how="left").fillna("未知")
-                    last = curr["current_df"][["馬號", "現價"]].rename(columns={"現價": "上回"})
-                    df_new = df_new.merge(last, on="馬號", how="left")
-                    df_new["上回"] = df_new["上回"].fillna(df_new["現價"])
-                    df_new["走勢"] = ((df_new["上回"] - df_new["現價"]) / df_new["上回"] * 100).fillna(0).round(1)
-                else: df_new["走勢"] = 0.0
-                curr["current_df"] = df_new
-                curr["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
-                st.success("已更新")
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error(f"失敗：{err}")
+            curr["debug_info"] = log
+            st.error("診斷完成，請查看右側日誌")
     
-    with c2: st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-
-    with st.expander("🛠️ 排位資料"):
-        txt_input = st.text_area("貼上排位表", value=curr["raw_info_text"], height=100)
-        if st.button("合併資料"):
-            info_df = parse_info(txt_input)
-            if not info_df.empty and not curr["current_df"].empty:
-                main_df = curr["current_df"]
-                if "騎師" in main_df.columns: main_df = main_df.drop(columns=["騎師", "練馬師"])
-                main_df = main_df.merge(info_df, on="馬號", how="left").fillna("未知")
-                curr["current_df"] = main_df
-                curr["raw_info_text"] = txt_input
-                st.success("OK")
-                st.rerun()
+    with c2: 
+        st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
+        with st.expander("📝 結構診斷 (Debug Structure)", expanded=True):
+            st.code(curr["debug_info"])
 
     if not curr["current_df"].empty:
-        df = curr["current_df"]
-        df["得分"] = df.apply(get_score, axis=1)
-        df["級別"] = df["得分"].apply(get_lvl)
-        df = df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index(drop=True)
-        
-        tab1, tab2 = st.tabs(["📋 卡片", "📑 列表"])
-        with tab1:
-            best = df.iloc[0]
-            m1, m2, m3 = st.columns(3)
-            m1.metric("最高分", f"#{best['馬號']} ({best['得分']})")
-            m2.metric("平均", round(df["得分"].mean(), 1))
-            m3.metric("落飛", int((df["走勢"] > 0).sum()))
-            
-            picks = df[df["得分"] >= threshold]
-            if not picks.empty:
-                st.markdown(f"**🔥 推薦 (>{threshold})**")
-                cols = st.columns(min(3, len(picks)))
-                for i, col in enumerate(cols):
-                    if i < len(picks):
-                        r = picks.iloc[i]
-                        trend = r['走勢']
-                        tag_c = "tag-drop" if trend > 0 else "tag-rise"
-                        txt = f"落 {trend}%" if trend > 0 else f"回 {abs(trend)}%"
-                        if trend == 0: txt = "-"
-                        with col:
-                            st.markdown(f"""
-                            <div class="horse-card top-pick-card">
-                                <div style="display:flex; justify-content:space-between">
-                                    <b style="color:#000;">#{r['馬號']} {r.get('馬名','')}</b>
-                                    <span class="tag tag-lvl">{r['級別']}級</span>
-                                </div>
-                                <div style="font-size:20px; font-weight:bold; margin:8px 0; color:#000;">
-                                    {r['現價']} <span style="color:#c62828; float:right">{r['得分']}</span>
-                                </div>
-                                <div class="tag {tag_c}">{txt}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-            else: st.info("無推薦")
-
-        with tab2: st.dataframe(df, use_container_width=True)
+        pass
     else:
-        st.info("暫無數據")
-
-elif app_mode == "📜 歷史":
-    h_db = load_hist()
-    if h_db:
-        dates = sorted(h_db.keys(), reverse=True)
-        sel_d = st.selectbox("日期", dates)
-        if sel_d:
-            races = sorted([int(x) for x in h_db[sel_d].keys()])
-            sel_r = st.radio("場次", races, format_func=lambda x: f"賽事 {x}", horizontal=True)
-            if sel_r:
-                raw = h_db[sel_d][str(sel_r)]["odds"]
-                hist_df = pd.DataFrame(raw)
-                hist_df["得分"] = hist_df.apply(get_score, axis=1)
-                hist_df["級別"] = hist_df["得分"].apply(get_lvl)
-                st.dataframe(hist_df.sort_values("得分", ascending=False), use_container_width=True)
-    else: st.info("無存檔")
-
-elif app_mode == "📈 總覽":
-    h_db = load_hist()
-    today = datetime.now(HKT).strftime("%Y-%m-%d")
-    if today in h_db:
-        res = []
-        for rid, val in h_db[today].items():
-            tmp = pd.DataFrame(val["odds"])
-            if not tmp.empty:
-                tmp["得分"] = tmp.apply(get_score, axis=1)
-                best = tmp.sort_values("得分", ascending=False).iloc[0]
-                res.append({"場次": int(rid), "首選": f"#{best['馬號']} ({best['得分']})", "賠率": best['現價']})
-        if res: st.table(pd.DataFrame(res).sort_values("場次"))
-    else: st.info("無今日數據")
+        st.info("請點擊左側「執行診斷」查看 HTML 結構")
