@@ -4,14 +4,13 @@ import numpy as np
 import re
 from datetime import datetime
 
-# ===================== V1.71 (Absolute Row Indexing Fix) =====================
-# 修復重點：解決整數賠率 (e.g. 11, 22) 被漏抓，導致錯抓位置賠率的問題。
-# 新邏輯：不依賴小數點特徵，改用「相對行數位置」鎖定。
-# 規則：馬號出現後的「第二個非空行」即為獨贏賠率。
+# ===================== V1.72 (Final Format Customization) =====================
+# 特色：針對用戶最終提供的排位表格式進行精準定制
+# 新格式：馬匹編號 6次近績 綵衣 馬名 負磅 騎師 檔位 ...
 
-st.set_page_config(page_title="賽馬智腦 V1.71", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.72", layout="wide")
 
-# --- 核心數據 (不變) ---
+# --- 核心數據與映射 (不變) ---
 REAL_STATS = {
     "jockey": { "Z Purton": 22.9, "J McDonald": 21.3, "M Barzalona": 16.7, "J Moreira": 16.1, "C Williams": 14.8, "H Bowman": 14.5, "K Teetan": 12.0, "C Y Ho": 11.5, "A Badel": 8.5, "A Atzeni": 8.2, "L Hewitson": 7.8, "B Avdulla": 7.5, "Y L Chung": 7.2, "C L Chau": 6.8, "K C Leung": 5.5, "M F Poon": 5.2, "H Bentley": 9.5, "L Ferraris": 8.0, "M Chadwick": 6.5, "A Hamelin": 4.5 },
     "trainer": { "J Size": 11.0, "K L Man": 10.9, "K W Lui": 10.0, "D Eustace": 9.8, "C Fownes": 9.7, "P C Ng": 9.5, "F C Lor": 9.2, "D A Hayes": 8.8, "A S Cruz": 8.5, "C S Shum": 8.3, "P F Yiu": 8.0, "D J Hall": 7.8, "M Newnham": 7.5, "W K Mo": 7.2, "J Richards": 6.5, "W Y So": 6.2, "T P Yung": 5.5, "Y S Tsui": 4.5, "C H Yip": 4.0, "C W Chang": 3.5 }
@@ -42,96 +41,79 @@ def calculate_ai_score(row):
     
     return score
 
-# --- 排位解析器 (維持 V1.68) ---
-def parse_trained_card(text):
+# --- [V1.72 核心] 最終版排位解析器 ---
+def parse_card_v172(text):
+    """
+    針對格式：馬號 6次近績 [空] 馬名 負磅 騎師 檔位 練馬師...
+    """
     data = []
     lines = text.strip().split('\n')
     for line in lines:
         line = line.strip()
-        if not line: continue
+        if not line or "馬匹編號" in line: continue
+
+        # 使用正則表達式，更準確地處理多個空格或 tab
         parts = re.split(r'\s+', line)
         if not parts[0].isdigit(): continue
+
         try:
             row = {}
+            # --- 根據新格式的固定索引 ---
             row['馬號'] = int(parts[0])
-            idx_name = 1
-            while idx_name < len(parts) and not parts[idx_name].strip(): idx_name += 1
-            row['馬名'] = parts[idx_name]
-            
-            idx_wt = idx_name + 1
-            while idx_wt < len(parts):
-                if parts[idx_wt].isdigit() and 100 <= int(parts[idx_wt]) <= 135:
-                    row['負磅'] = int(parts[idx_wt])
-                    break
-                idx_wt += 1
-            
-            jockey_part = parts[idx_wt + 1]
-            if len(parts) > idx_wt + 2 and "(-" in parts[idx_wt + 2]:
-                jockey_part += " " + parts[idx_wt + 2]
-                idx_draw = idx_wt + 3
-            else:
-                idx_draw = idx_wt + 2
+            row['6次近績'] = parts[1]
+            row['馬名'] = parts[2]
+            row['負磅'] = int(parts[3])
+
+            # --- 浮動索引處理 (騎師+/-) ---
+            # 騎師可能佔用 1 或 2 個位置
+            current_index = 4
+            jockey_part = parts[current_index]
+            current_index += 1
+            if current_index < len(parts) and "(-" in parts[current_index]:
+                jockey_part += " " + parts[current_index]
+                current_index += 1
             row['騎師'] = jockey_part
-            if len(parts) > idx_draw and parts[idx_draw].isdigit():
-                row['檔位'] = int(parts[idx_draw])
-            if len(parts) > idx_draw + 1:
-                row['練馬師'] = parts[idx_draw + 1]
+
+            # 騎師後面的就是檔位
+            if current_index < len(parts) and parts[current_index].isdigit():
+                row['檔位'] = int(parts[current_index])
+                current_index += 1
+
+            # 檔位後面的就是練馬師
+            if current_index < len(parts):
+                row['練馬師'] = parts[current_index]
+                current_index += 1
             
+            # 練馬師後面的就是評分
+            if current_index < len(parts):
+                row['評分'] = parts[current_index]
+
             data.append(row)
-        except: continue
+
+        except Exception:
+            continue
+            
     return pd.DataFrame(data)
 
-# --- [修正] 絕對行數索引賠率解析器 ---
+# --- 賠率解析器 (維持不變) ---
 def parse_odds_strict_sequence(text):
-    """
-    針對格式：
-    Line 1: 馬號 (1)
-    Line 2: 馬名資訊...
-    Line 3: 獨贏 (6.2)  <-- 抓這個
-    Line 4: 位置 (2.4)
-    Line 5: 馬號 (2)
-    ...
-    """
     odds_map = {}
-    
-    # 1. 將文字按行分割，並去除空行
     raw_lines = text.split('\n')
     lines = [line.strip() for line in raw_lines if line.strip()]
-    
     i = 0
     while i < len(lines):
         line = lines[i]
-        
-        # 檢測是否為馬號 (1-14 的純數字)
         if line.isdigit() and 1 <= int(line) <= 14:
             current_horse = int(line)
-            
-            # 根據您的格式，馬號下面是資訊，再下面才是獨贏
-            # Index i = 馬號
-            # Index i+1 = 馬名資訊
-            # Index i+2 = 獨贏 <--- 目標
-            
             if i + 2 < len(lines):
                 win_line = lines[i+2]
-                
-                # 嘗試提取賠率 (支援整數和小數)
                 try:
-                    # 有時候賠率可能會帶有其他字元，嘗試提取第一個數字
                     nums = re.findall(r'\d+\.\d+|\d+', win_line)
                     if nums:
-                        val = float(nums[0])
-                        # 簡單過濾：獨贏通常不會超過 500
-                        if val < 500:
-                            odds_map[current_horse] = val
-                except:
-                    pass
-            
-            # 跳過這匹馬的區塊，尋找下一個馬號
-            # 因為一個區塊至少有 4 行 (號, 名, 贏, 位)，所以我們可以安全地跳過幾行加速
+                        odds_map[current_horse] = float(nums[0])
+                except: pass
             i += 2 
-        else:
-            i += 1
-            
+        else: i += 1
     return odds_map
 
 # --- Session ---
@@ -141,7 +123,7 @@ if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'
 if 'race_info' not in st.session_state: st.session_state['race_info'] = {"date": datetime.now().strftime("%Y-%m-%d"), "no": 1}
 
 # ===================== UI =====================
-st.sidebar.title("🏇 賽馬智腦 V1.71")
+st.sidebar.title("🏇 賽馬智腦 V1.72")
 page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
 
 if page == "🔒 後台管理":
@@ -165,18 +147,16 @@ if page == "🔒 後台管理":
         
         c1, c2 = st.columns(2)
         with c1: 
-            st.info("排位表 (特訓格式)")
+            st.info("排位表 (最終版格式)")
             card_in = st.text_area("排位文字", height=300)
         with c2: 
-            st.info("賠率 (嚴格順序格式)")
-            st.caption("請確保順序：馬號 -> 資訊 -> 獨贏 -> 位置")
+            st.info("賠率 (垂直格式)")
             odds_in = st.text_area("賠率文字", height=300)
             
-        if st.button("🚀 發布並更新", type="primary"):
-            df = parse_trained_card(card_in)
+        if st.button("🚀 發布", type="primary"):
+            df = parse_card_v172(card_in)
             if not df.empty:
                 if odds_in:
-                    # 使用新的嚴格順序解析器
                     odds_map = parse_odds_strict_sequence(odds_in)
                     df['獨贏'] = df['馬號'].map(odds_map).fillna("-")
                 else: df['獨贏'] = "-"
@@ -191,11 +171,9 @@ if page == "🔒 後台管理":
                 st.session_state['race_info'] = {"date": str(input_date), "no": input_race}
                 st.session_state['last_update'] = pd.Timestamp.now().strftime("%H:%M:%S")
                 
-                st.success(f"已發布！共 {len(df)} 匹馬，解析到 {len(odds_map) if odds_in else 0} 筆賠率。")
-                
-                # Debug 顯示解析到的賠率，讓您確認
-                if odds_in:
-                    st.write("解析到的賠率預覽:", odds_map)
+                st.success(f"發布成功！共 {len(df)} 匹馬。")
+                # 為了讓您確認，顯示解析後的第一行數據
+                st.write("解析預覽:", df.head(1).to_dict('records')[0])
                     
             else: st.error("排位表解析失敗")
 
@@ -217,13 +195,15 @@ else:
         
         st.divider()
         
-        display_cols = [c for c in ['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅'] if c in df.columns]
+        # 新增「6次近績」到顯示欄位
+        display_cols = [c for c in ['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅', '評分', '6次近績'] if c in df.columns]
+        
         st.dataframe(
             df[display_cols],
             column_config={
                 "勝率%": st.column_config.ProgressColumn("AI 勝率", format="%.1f%%", min_value=0, max_value=100),
                 "獨贏": st.column_config.TextColumn("獨贏賠率"),
-                "馬號": st.column_config.NumberColumn("No.", format="%d"),
+                "6次近績": st.column_config.TextColumn("近績"),
             },
             use_container_width=True,
             hide_index=True
