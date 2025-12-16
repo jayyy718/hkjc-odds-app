@@ -10,19 +10,25 @@ from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.7"  # 更新：增強 API 容錯，解決「非 JSON」格式錯誤
+APP_VERSION = "V1.8"  # 更新：加入 Session Cookie 自動獲取，增強防擋機制
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 更新 Headers，模擬真實瀏覽器以避免被擋
+# 模擬真實瀏覽器的 Headers
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
     "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en",
     "X-Requested-With": "XMLHttpRequest",
+    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
     "Connection": "keep-alive"
 }
 
@@ -50,14 +56,27 @@ race_storage = get_storage()
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-# ===================== 1. 核心 API =====================
+# ===================== 1. 核心 API (增強版) =====================
+def get_hkjc_session():
+    """先訪問首頁獲取 Cookie"""
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    try:
+        # 訪問賠率首頁以獲取 ASP.NET Session ID
+        session.get("https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en", timeout=5)
+    except:
+        pass
+    return session
+
 def fetch_hkjc_data(race_no, target_date):
     date_str = target_date.strftime("%Y-%m-%d")
     url = "https://bet.hkjc.com/racing/getJSON.aspx"
     
-    # 定義要嘗試的場地列表
-    venues = ["ST", "HV"]
+    # 使用 Session 保持連線狀態
+    session = get_hkjc_session()
     
+    # 輪詢場地 (有些賽事可能是混合場地或單一場地)
+    venues = ["ST", "HV"]
     last_error = ""
     
     for venue in venues:
@@ -70,32 +89,30 @@ def fetch_hkjc_data(race_no, target_date):
         }
         
         try:
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=8)
+            resp = session.get(url, params=params, timeout=10)
             
-            # 檢查 HTTP 狀態碼
             if resp.status_code != 200:
                 last_error = f"HTTP {resp.status_code}"
-                continue # 嘗試下一個場地
-            
-            # 檢查回傳內容是否為 HTML (錯誤頁面通常是 HTML)
-            if "<html" in resp.text.lower() or "<!doctype" in resp.text.lower():
-                last_error = "回傳了 HTML 錯誤頁面 (可能場地不對)"
                 continue
-                
-            # 嘗試解析 JSON
+            
+            # 檢查是否被導向到錯誤頁面
+            if "error" in resp.url.lower() or "<html" in resp.text.lower():
+                # 如果 ST 失敗，可能是 HV，反之亦然，所以只記錄不報錯
+                last_error = "HTML Response (Venue Mismatch?)"
+                continue
+            
             try:
                 data = resp.json()
-            except ValueError:
-                last_error = "JSON 解析失敗"
+            except:
+                last_error = "非 JSON 格式"
                 continue
-                
-            # 檢查 OUT 欄位
+            
             raw_str = data.get("OUT")
             if not raw_str:
-                last_error = "JSON 中無 OUT 數據"
-                continue # 可能是場地不對，繼續試
-                
-            # 解析成功，處理數據
+                last_error = "無 OUT 數據"
+                continue
+            
+            # 解析成功
             odds_list = []
             parts = raw_str.split(";")
             for p in parts:
@@ -106,22 +123,20 @@ def fetch_hkjc_data(race_no, target_date):
                         if k.isdigit():
                             try:
                                 val = float(v)
-                                if val < 900: # 排除無效賠率
+                                if val < 900: # 排除 999
                                     odds_list.append({"馬號": int(k), "現價": val})
                             except: pass
             
             if odds_list:
                 df = pd.DataFrame(odds_list)
                 df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
-                return df, None # 成功返回
-            else:
-                last_error = "解析後無有效賠率數據"
-                
-        except requests.exceptions.RequestException as e:
-            last_error = f"網絡錯誤: {str(e)}"
+                return df, None
+        
+        except Exception as e:
+            last_error = str(e)
             continue
 
-    return None, f"更新失敗: {last_error} (已嘗試 ST/HV, 日期: {date_str})"
+    return None, f"更新失敗: {last_error} (請確認日期與場次是否已開售)"
 
 # 模擬數據生成 (Demo Mode)
 def generate_demo_data():
@@ -371,7 +386,7 @@ if app_mode == "📡 實時 (Live)":
                 st.rerun()
             else:
                 st.error(f"更新失敗：{err}")
-                st.markdown('<p style="color:black; font-size:14px;">提示：請檢查日期是否正確（預售選明日）。若仍失敗，可能是 API 暫時被封鎖，請稍後再試。</p>', unsafe_allow_html=True)
+                st.markdown('<p style="color:black; font-size:14px;">提示：如一直失敗，可能賽事尚未開售，請稍後再試。</p>', unsafe_allow_html=True)
     
     with c2:
         st.info(f"賽事 {sel_race} | 上次更新: {curr['last_update']}")
