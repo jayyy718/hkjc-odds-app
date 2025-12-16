@@ -10,15 +10,16 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.31 (Overseas Source) =====================
-APP_VERSION = "V1.31 (Racing & Sports AU)"
+# ===================== 版本 V1.32 (Text Mining) =====================
+APP_VERSION = "V1.32 (Text Mining)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 偽裝成普通瀏覽器
+# 偽裝 headers
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 @st.cache_resource
@@ -36,229 +37,182 @@ def get_storage():
 
 race_storage = get_storage()
 
-JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
-TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
+# 擴充關鍵字庫 (包含全名與縮寫)
+JOCKEY_DB = [
+    'Z Purton', 'Purton', 'J McDonald', 'McDonald', 'H Bowman', 'Bowman', 
+    'K Teetan', 'Teetan', 'C Y Ho', 'Ho', 'L Ferraris', 'Ferraris', 
+    'H Bentley', 'Bentley', 'A Badel', 'Badel', 'M Chadwick', 'Chadwick',
+    'A Atzeni', 'Atzeni', 'L Hewitson', 'Hewitson', 'K De Melo', 'De Melo',
+    'B Avdulla', 'Avdulla', 'M F Poon', 'Poon', 'K H Chan', 'Chan',
+    'E C W Wong', 'Wong', 'H T Mo', 'Mo', 'C L Chau', 'Chau'
+]
 
-def fetch_ras_data(r_no, t_date):
-    """從 Racing and Sports (澳洲) 抓取數據"""
-    # 網址格式: https://www.racingandsports.com.au/horse-racing/hong-kong/happy-valley/2025-12-17/race-1
-    # 注意：澳洲網站通常用 "happy-valley" 或 "sha-tin"
+TRAINER_DB = [
+    'J Size', 'Size', 'K W Lui', 'Lui', 'P C Ng', 'Ng', 'F C Lor', 'Lor',
+    'C S Shum', 'Shum', 'P F Yiu', 'Yiu', 'A S Cruz', 'Cruz', 'C Fownes', 'Fownes',
+    'D J Whyte', 'Whyte', 'D J Hall', 'Hall', 'M Newnham', 'Newnham',
+    'J Richards', 'Richards', 'K L Man', 'Man', 'W Y So', 'So', 'T P Yung', 'Yung',
+    'Y S Tsui', 'Tsui', 'C H Yip', 'Yip', 'C W Chang', 'Chang'
+]
+
+# 評分權重
+JOCKEY_RANK = {'Purton': 9.5, 'McDonald': 9.0, 'Bowman': 8.5, 'Teetan': 7.5, 'Ho': 8.0, 'Ferraris': 6.5, 'Bentley': 7.0}
+TRAINER_RANK = {'Size': 9.0, 'Lui': 8.5, 'Ng': 8.5, 'Lor': 8.0, 'Shum': 8.0, 'Yiu': 7.5, 'Cruz': 8.5, 'Fownes': 8.0}
+
+def extract_horse_data_from_text(text):
+    """從純文字中挖掘馬匹數據"""
+    lines = text.split('\n')
+    res = []
     
-    # 這裡我們需要一個判斷場地的邏輯，暫時先試 HV (Happy Valley)，如果失敗再試 ST (Sha Tin)
-    venues = ["happy-valley", "sha-tin"]
-    date_str = t_date.strftime("%Y-%m-%d")
+    # 狀態機
+    current_horse = {}
     
-    logs = []
+    # 用正則尋找每一匹馬的開頭： "數字 + 空格 + 馬名(全大寫)"
+    # 例如: "1  ROMANTIC WARRIOR"
+    horse_pattern = re.compile(r'^(\d{1,2})\s+([A-Z\s\']{3,30})$')
     
-    for venue in venues:
-        url = f"https://www.racingandsports.com.au/horse-racing/hong-kong/{venue}/{date_str}/race-{r_no}"
-        logs.append(f"嘗試 RAS: {url}")
+    for line in lines:
+        line = line.strip()
+        if not line: continue
         
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                
-                # RAS 的表格通常有 class "table-striped" 或類似
-                # 我們直接找包含 "Horse" 字眼的 table
-                tables = soup.find_all('table')
-                target_table = None
-                
-                for tbl in tables:
-                    txt = tbl.get_text().lower()
-                    if "horse" in txt and "jockey" in txt:
-                        target_table = tbl
-                        break
-                
-                if target_table:
-                    logs.append(f"-> 找到排位表 ({venue})")
-                    rows = target_table.find_all('tr')
-                    res = []
-                    
-                    for row in rows:
-                        cells = row.find_all('td')
-                        if not cells: continue
-                        
-                        # RAS 欄位通常很乾淨
-                        # [0]No [1]Form [2]Horse [3]Trainer [4]Jockey [5]Wgt [6]Bar [7]Odds
-                        row_text = [c.get_text(strip=True) for c in cells]
-                        
-                        try:
-                            # 1. 馬號
-                            h_no = int(re.sub(r'\D', '', row_text[0]))
-                            
-                            # 2. 馬名 (通常在第2欄或第3欄)
-                            # RAS 的馬名欄位通常包含馬名和一些小字，我們取第一行
-                            h_name_raw = row_text[2]
-                            # 分割換行，取第一部分
-                            h_name = h_name_raw.split('\n')[0].strip()
-                            # 移除 (HK) 或 (NZ) 等產地標示
-                            h_name = re.sub(r'\(.*?\)', '', h_name).strip()
-                            
-                            # 3. 練馬師 & 騎師
-                            # RAS 順序有時不同，用關鍵字判斷
-                            items = row_text[3:6] # 取中間幾欄來找
-                            jock = "未知"
-                            trn = "未知"
-                            
-                            # 簡單啟發式：括號通常是練馬師名字的一部分，或者在後面
-                            # 這裡我們先假設順序 [Trainer] [Jockey]
-                            if len(items) >= 2:
-                                trn = items[0]
-                                jock = items[1]
-
-                            # 4. 賠率 (最後一欄通常是賠率)
-                            odds = 0.0
-                            if row_text[-1]:
-                                m = re.search(r'(\d+\.\d+|\d+)', row_text[-1])
-                                if m: odds = float(m.group(1))
-                            
-                            # 如果沒抓到賠率，試試倒數第二欄
-                            if odds == 0.0 and len(row_text) > 2:
-                                m = re.search(r'(\d+\.\d+|\d+)', row_text[-2])
-                                if m: odds = float(m.group(1))
-
-                            res.append({
-                                "馬號": h_no,
-                                "馬名": h_name,
-                                "騎師": jock,
-                                "練馬師": trn,
-                                "現價": odds
-                            })
-                            
-                        except: pass
-                        
-                    if res:
-                        logs.append(f"成功提取 {len(res)} 匹馬 (含賠率)")
-                        return pd.DataFrame(res), "\n".join(logs)
-                    
-            elif resp.status_code == 404:
-                logs.append("404 Not Found (可能場地錯誤)")
-            else:
-                logs.append(f"HTTP {resp.status_code}")
-                
-        except Exception as e:
-            logs.append(f"RAS Error: {e}")
+        # 嘗試匹配馬號與馬名
+        m = horse_pattern.match(line)
+        if m:
+            # 如果之前有抓到馬，先存起來
+            if current_horse:
+                res.append(current_horse)
             
-    return None, "\n".join(logs)
-def fetch_scmp_deep(r_no, t_date):
-    """SCMP 暴力鑽探模式"""
+            # 開始新的一匹馬
+            h_no = int(m.group(1))
+            h_name = m.group(2).strip()
+            
+            # 排除標題行 (如 "1 HORSE NAME")
+            if h_name not in ["HORSE", "JOCKEY", "TRAINER", "LAST RUNS"]:
+                current_horse = {
+                    "馬號": h_no,
+                    "馬名": h_name,
+                    "騎師": "未知",
+                    "練馬師": "未知",
+                    "現價": 0.0
+                }
+        
+        # 如果正在處理某匹馬，嘗試在後續行中找騎師/練馬師/賠率
+        elif current_horse:
+            # 找騎師
+            if current_horse["騎師"] == "未知":
+                for j in JOCKEY_DB:
+                    if j in line:
+                        current_horse["騎師"] = j
+                        break
+            
+            # 找練馬師
+            if current_horse["練馬師"] == "未知":
+                for t in TRAINER_DB:
+                    if t in line:
+                        current_horse["練馬師"] = t
+                        break
+                        
+            # 找賠率 (行內唯一的數字且帶小數點)
+            if current_horse["現價"] == 0.0:
+                # 排除像 "118" (磅位) 或 "60" (評分) 這種整數
+                odds_match = re.search(r'\b(\d+\.\d+)\b', line)
+                if odds_match:
+                    val = float(odds_match.group(1))
+                    if 1.0 < val < 200.0:
+                        current_horse["現價"] = val
+
+    # 加入最後一匹
+    if current_horse:
+        res.append(current_horse)
+        
+    return res
+
+def fetch_scmp_text_mining(r_no, t_date):
+    """SCMP 純文字挖掘模式"""
     date_str = t_date.strftime("%Y%m%d")
     url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
-    logs = [f"SCMP Deep: {url}"]
+    logs = [f"SCMP Text: {url}"]
     
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        # 找最大的 table
-        tables = soup.find_all('table')
-        target_table = None
-        max_rows = 0
-        for tbl in tables:
-            rows = tbl.find_all('tr')
-            if 8 <= len(rows) <= 20:
-                if len(rows) > max_rows:
-                    max_rows = len(rows)
-                    target_table = tbl
-                    
-        if target_table:
-            rows = target_table.find_all('tr')
-            res = []
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
             
-            for row in rows:
-                # 獲取這一行裡所有的文字，不管它藏得多深
-                # separator='|' 可以把黏連的字分開
-                all_text = row.get_text(separator='|', strip=True)
-                parts = all_text.split('|')
+            # 提取主要內容區塊 (避免導航欄干擾)
+            main_content = soup.find('div', class_='racecard') 
+            if not main_content:
+                main_content = soup.find('body')
                 
-                # 過濾空字串
-                parts = [p for p in parts if p.strip()]
-                
-                if not parts: continue
-                
-                h_no = 0
-                h_name = "未知"
-                jock = "未知"
-                trn = "未知"
-                odds = 0.0
-                
-                # 掃描每一個片段
-                for p in parts:
-                    # 找馬號
-                    if h_no == 0 and re.match(r'^\d+$', p):
-                        v = int(p)
-                        if 1 <= v <= 24: h_no = v
-                        continue
-                        
-                    # 找馬名 (全大寫，長度>3)
-                    if h_name == "未知" and p.isupper() and len(p) > 3 and not re.search(r'\d', p):
-                        # 排除常見標題
-                        if p not in ["HORSE", "JOCKEY", "TRAINER", "DRAW", "RATING"]:
-                            h_name = p
-                        continue
-                        
-                    # 找騎師 (關鍵字匹配)
-                    if jock == "未知":
-                        for k in JOCKEY_RANK.keys(): # 用我們資料庫的名字來對
-                            # 模糊匹配
-                            if k.split()[-1] in p: # 比對姓氏
-                                jock = p
-                                break
-                                
-                    # 找練馬師
-                    if trn == "未知":
-                        for k in TRAINER_RANK.keys():
-                            if k.split()[-1] in p:
-                                trn = p
-                                break
-                                
-                    # 找賠率
-                    if odds == 0.0 and re.match(r'^\d+\.\d+$', p):
-                        try:
-                            v = float(p)
-                            if 1.0 < v < 200.0: odds = v
-                        except: pass
-                        
-                if h_no > 0:
-                    res.append({
-                        "馬號": h_no,
-                        "馬名": h_name,
-                        "騎師": jock,
-                        "練馬師": trn,
-                        "現價": odds
-                    })
+            # 轉為純文字，保留換行
+            raw_text = main_content.get_text(separator='\n')
             
-            if res:
-                logs.append(f"Deep模式提取 {len(res)} 筆")
-                return pd.DataFrame(res), "\n".join(logs)
+            # 開始挖掘
+            data = extract_horse_data_from_text(raw_text)
+            
+            if 
+                logs.append(f"挖掘成功: {len(data)} 匹馬")
+                df = pd.DataFrame(data)
+                return df, "\n".join(logs)
+            else:
+                logs.append("挖掘失敗，找不到馬匹模式")
+                # Debug: 印出部分文字
+                logs.append(f"Text Preview: {raw_text[:200]}...")
                 
+        else:
+            logs.append(f"HTTP Error: {resp.status_code}")
+            
     except Exception as e:
-        logs.append(f"SCMP Deep Error: {e}")
+        logs.append(f"Error: {e}")
         
     return None, "\n".join(logs)
+def fetch_hkjc_fallback_log(r_no):
+    """只記錄 HKJC 狀態，不依賴"""
+    url = "https://bet.hkjc.com/racing/jsonData.aspx"
+    try:
+        params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
+        requests.get(url, params=params, headers=HEADERS, timeout=3)
+    except: pass
+    return {}
 
 def fetch_data(r_no, t_date):
-    full_log = "=== 開始更新 (V1.31) ===\n"
+    full_log = "=== 開始更新 (V1.32) ===\n"
     
-    # 1. 優先嘗試澳洲 RAS (因為有賠率)
-    df, log = fetch_ras_data(r_no, t_date)
+    # 1. SCMP 純文字挖掘
+    df, log = fetch_scmp_text_mining(r_no, t_date)
     full_log += log + "\n"
     
     if df is not None and not df.empty:
-        full_log += ">>> 使用 RAS 數據 (含賠率)\n"
+        # 賠率補救 (如果 SCMP 沒賠率)
+        if df["現價"].sum() == 0:
+            full_log += "SCMP 無賠率，嘗試 HKJC 備用通道...\n"
+            try:
+                # 嘗試新的 API 端點 (有時候 bet.hkjc.com 會擋，但其他子網域不會)
+                # 這裡我們試試直接抓 XML (如果有的話) 或者舊版 JSON
+                # 為了避免複雜，這裡還是用 requests 試最後一次
+                url = "https://bet.hkjc.com/racing/jsonData.aspx"
+                params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
+                resp = requests.get(url, params=params, headers=HEADERS, timeout=3)
+                
+                odds_map = {}
+                # 寬鬆的正則表達式
+                matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
+                for m in matches: odds_map[int(m[0])] = float(m[1])
+                
+                if not odds_map:
+                    # JSON 格式
+                    matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
+                    for m in matches: odds_map[int(m[0])] = float(m[1])
+
+                if odds_map:
+                    df["現價"] = df["馬號"].map(odds_map).fillna(0.0)
+                    full_log += f"HKJC 補位成功: {len(odds_map)} 筆\n"
+            except: 
+                full_log += "HKJC 連線失敗\n"
+                
         return df, full_log
-    
-    # 2. 如果失敗，用 SCMP Deep Mode
-    full_log += "--- RAS 失敗，嘗試 SCMP Deep ---\n"
-    df_scmp, log_scmp = fetch_scmp_deep(r_no, t_date)
-    full_log += log_scmp + "\n"
-    
-    if df_scmp is not None:
-        return df_scmp, full_log
         
-    return None, full_log
-# 評分與輔助函數 (保持不變)
+    return None, full_log + "SCMP 挖掘失敗\n"
+
 def get_score(row):
     s = 0
     o = row.get("現價", 0)
@@ -270,12 +224,16 @@ def get_score(row):
     elif tr >= 10: s += 35
     elif tr >= 5: s += 20
     elif tr <= -10: s -= 20
+    
     j = str(row.get("騎師", ""))
     t = str(row.get("練馬師", ""))
+    
+    # 模糊匹配評分
     for k, v in JOCKEY_RANK.items():
-        if k in j or j in k: s += v * 2.5
+        if k in j: s += v * 2.5
     for k, v in TRAINER_RANK.items():
-        if k in t or t in k: s += v * 1.5
+        if k in t: s += v * 1.5
+        
     return round(s, 1)
 
 def get_lvl(s):
@@ -330,7 +288,6 @@ def load_hist():
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
         except: pass
     return {}
-
 # UI
 st.set_page_config(page_title=f"賽馬智腦 {APP_VERSION}", layout="wide")
 st.markdown("""
@@ -383,7 +340,7 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 海外數據更新 (RAS)", type="primary", use_container_width=True):
+        if st.button("🔄 文字挖掘更新", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
                 log = "Demo"
@@ -412,7 +369,7 @@ if app_mode == "📡 實時":
     
     with c2: 
         st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-        with st.expander("📝 數據源日誌", expanded=True):
+        with st.expander("📝 挖掘日誌 (Mining Log)", expanded=True):
             st.code(curr["debug_info"])
 
     with st.expander("🛠️ 排位資料"):
