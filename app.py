@@ -10,26 +10,19 @@ from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.8"  # 更新：加入 Session Cookie 自動獲取，增強防擋機制
+APP_VERSION = "V1.9"  # 更新：新增 HTML 爬蟲備用方案，解決 API 被擋問題
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 模擬真實瀏覽器的 Headers
+# 模擬真實瀏覽器 Headers
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
-    "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en",
-    "X-Requested-With": "XMLHttpRequest",
-    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "Connection": "keep-alive"
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
 }
 
 @st.cache_resource
@@ -56,87 +49,118 @@ race_storage = get_storage()
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-# ===================== 1. 核心 API (增強版) =====================
-def get_hkjc_session():
-    """先訪問首頁獲取 Cookie"""
-    session = requests.Session()
-    session.headers.update(HEADERS)
+# ===================== 1. 核心 API (雙引擎版) =====================
+
+def fetch_from_json_api(session, race_no, date_str, venue):
+    """嘗試從 JSON API 獲取"""
+    url = "https://bet.hkjc.com/racing/getJSON.aspx"
+    params = {"type": "winodds", "date": date_str, "venue": venue, "start": race_no, "end": race_no}
+    
     try:
-        # 訪問賠率首頁以獲取 ASP.NET Session ID
-        session.get("https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en", timeout=5)
+        # JSON API 需要特定的 Referer
+        json_headers = HEADERS.copy()
+        json_headers["Referer"] = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en"
+        json_headers["X-Requested-With"] = "XMLHttpRequest"
+        json_headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+
+        resp = session.get(url, params=params, headers=json_headers, timeout=5)
+        
+        if resp.status_code == 200 and "OUT" in resp.text:
+            data = resp.json()
+            raw_str = data.get("OUT")
+            if raw_str:
+                odds_list = []
+                parts = raw_str.split(";")
+                for p in parts:
+                    if "=" in p:
+                        k, v = p.split("=")
+                        if k.isdigit() and float(v) < 900:
+                            odds_list.append({"馬號": int(k), "現價": float(v)})
+                return odds_list
     except:
         pass
-    return session
+    return None
+
+def fetch_from_html_scraping(session, race_no, date_str, venue):
+    """備案：直接爬取網頁 HTML"""
+    url = "https://bet.hkjc.com/racing/pages/odds_wp.aspx"
+    params = {"date": date_str, "venue": venue, "raceno": race_no, "lang": "en"}
+    
+    try:
+        resp = session.get(url, params=params, headers=HEADERS, timeout=8)
+        if resp.status_code == 200:
+            # 使用正則表達式尋找賠率
+            # 模式: id="win_odds_1" ... > 2.5 </div>
+            # 這是一個簡化的查找，針對常見的 HTML 結構
+            
+            # 1. 尋找 win_odds_X 的結構
+            odds_list = []
+            # 匹配類似 o="12.0" 這樣的屬性，通常出現在 JavaScript 變數或標籤屬性中
+            # 或者直接匹配 <div id="win_odds_1">12.0</div>
+            
+            # 嘗試匹配 HTML 內容
+            # 假設 HTML 裡面有 id="win_odds_1">9.5</div>
+            pattern = r'id="win_odds_(\d+)"[^>]*>([\d\.]+)<'
+            matches = re.findall(pattern, resp.text)
+            
+            if matches:
+                for m in matches:
+                    horse_no = int(m[0])
+                    odds_val = float(m[1])
+                    if odds_val < 900:
+                        odds_list.append({"馬號": horse_no, "現價": odds_val})
+                return odds_list
+            
+            # 如果上面失敗，嘗試另一種常見模式 (JavaScript 數據)
+            # winodds = "1=9.5;2=12.0;..."
+            js_pattern = r'winodds\s*=\s*"([^"]+)"'
+            js_match = re.search(js_pattern, resp.text)
+            if js_match:
+                raw_str = js_match.group(1)
+                parts = raw_str.split(";")
+                for p in parts:
+                    if "=" in p:
+                        k, v = p.split("=")
+                        if k.isdigit():
+                            odds_list.append({"馬號": int(k), "現價": float(v)})
+                return odds_list
+
+    except Exception as e:
+        print(f"HTML Scraping Error: {e}")
+        pass
+    return None
 
 def fetch_hkjc_data(race_no, target_date):
     date_str = target_date.strftime("%Y-%m-%d")
-    url = "https://bet.hkjc.com/racing/getJSON.aspx"
     
-    # 使用 Session 保持連線狀態
-    session = get_hkjc_session()
+    # 建立 Session
+    session = requests.Session()
+    session.headers.update(HEADERS)
     
-    # 輪詢場地 (有些賽事可能是混合場地或單一場地)
+    # 先訪問首頁拿 Cookie
+    try:
+        session.get("https://bet.hkjc.com/index.aspx?lang=en", timeout=5)
+    except: pass
+
     venues = ["ST", "HV"]
     last_error = ""
     
     for venue in venues:
-        params = {
-            "type": "winodds", 
-            "date": date_str, 
-            "venue": venue, 
-            "start": race_no, 
-            "end": race_no
-        }
+        # 方法 1: 嘗試 JSON API
+        odds_data = fetch_from_json_api(session, race_no, date_str, venue)
         
-        try:
-            resp = session.get(url, params=params, timeout=10)
-            
-            if resp.status_code != 200:
-                last_error = f"HTTP {resp.status_code}"
-                continue
-            
-            # 檢查是否被導向到錯誤頁面
-            if "error" in resp.url.lower() or "<html" in resp.text.lower():
-                # 如果 ST 失敗，可能是 HV，反之亦然，所以只記錄不報錯
-                last_error = "HTML Response (Venue Mismatch?)"
-                continue
-            
-            try:
-                data = resp.json()
-            except:
-                last_error = "非 JSON 格式"
-                continue
-            
-            raw_str = data.get("OUT")
-            if not raw_str:
-                last_error = "無 OUT 數據"
-                continue
-            
-            # 解析成功
-            odds_list = []
-            parts = raw_str.split(";")
-            for p in parts:
-                if "=" in p:
-                    kv = p.split("=")
-                    if len(kv) == 2:
-                        k, v = kv
-                        if k.isdigit():
-                            try:
-                                val = float(v)
-                                if val < 900: # 排除 999
-                                    odds_list.append({"馬號": int(k), "現價": val})
-                            except: pass
-            
-            if odds_list:
-                df = pd.DataFrame(odds_list)
-                df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
-                return df, None
+        # 方法 2: 如果 JSON 失敗，嘗試 HTML 爬蟲
+        if not odds_
+            odds_data = fetch_from_html_scraping(session, race_no, date_str, venue)
         
-        except Exception as e:
-            last_error = str(e)
-            continue
+        if odds_
+            df = pd.DataFrame(odds_data)
+            df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
+            return df, None
+        else:
+            last_error = "兩種方法皆無法獲取數據"
 
-    return None, f"更新失敗: {last_error} (請確認日期與場次是否已開售)"
+    return None, f"更新失敗: {last_error} (請確認日期與場次是否正確)"
 
 # 模擬數據生成 (Demo Mode)
 def generate_demo_data():
