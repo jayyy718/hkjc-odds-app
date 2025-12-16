@@ -9,15 +9,24 @@ import random
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.13 =====================
-APP_VERSION = "V1.13"
+# ===================== 版本 V1.14 =====================
+APP_VERSION = "V1.14"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-HEADERS = {
+# 兩組 Headers：桌面版 與 手機版
+HEADERS_DESKTOP = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
+    "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en",
     "Connection": "keep-alive"
+}
+
+HEADERS_MOBILE = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Accept": "*/*",
+    "Referer": "https://m.hkjc.com/"
 }
 
 @st.cache_resource
@@ -44,10 +53,14 @@ JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
 def get_json_odds(session, r_no, d_str, ven):
+    # 策略 1: 標準 JSON API
     url = "https://bet.hkjc.com/racing/getJSON.aspx"
     params = {"type": "winodds", "date": d_str, "venue": ven, "start": r_no, "end": r_no}
     try:
-        resp = session.get(url, params=params, headers=HEADERS, timeout=5)
+        # 隨機延遲，模擬真人
+        time.sleep(random.uniform(0.1, 0.3))
+        resp = session.get(url, params=params, headers=HEADERS_DESKTOP, timeout=6)
+        
         if resp.status_code == 200 and "OUT" in resp.text:
             data = resp.json()
             raw = data.get("OUT")
@@ -66,14 +79,31 @@ def get_json_odds(session, r_no, d_str, ven):
     return None
 
 def get_html_odds(session, r_no, d_str, ven):
+    # 策略 2: 爬取網頁 HTML (桌面版)
     url = "https://bet.hkjc.com/racing/pages/odds_wp.aspx"
     params = {"date": d_str, "venue": ven, "raceno": r_no, "lang": "en"}
     try:
-        resp = session.get(url, params=params, headers=HEADERS, timeout=8)
+        time.sleep(random.uniform(0.1, 0.3))
+        resp = session.get(url, params=params, headers=HEADERS_DESKTOP, timeout=8)
+        
         if resp.status_code == 200:
             res = []
-            pat = r'id="win_odds_(\d+)"[^>]*>([\d\.]+)<'
+            # 增強型 Regex: 抓取 id="win_odds_1" 或類似結構
+            pat = r'(?:id="win_odds_|o=")(\d+)"[^>]*>([\d\.]+)<'
             matches = re.findall(pat, resp.text)
+            
+            # 如果上面抓不到，試試看抓 JS 變數
+            if not matches:
+                pat_js = r'winodds\s*=\s*"([^"]+)"'
+                m_js = re.search(pat_js, resp.text)
+                if m_js:
+                    raw = m_js.group(1)
+                    for p in raw.split(";"):
+                        if "=" in p:
+                            k, v = p.split("=")
+                            if k.isdigit():
+                                matches.append((k, v))
+
             if matches:
                 for m in matches:
                     try:
@@ -88,14 +118,18 @@ def get_html_odds(session, r_no, d_str, ven):
 def fetch_data(r_no, t_date):
     d_str = t_date.strftime("%Y-%m-%d")
     s = requests.Session()
-    s.headers.update(HEADERS)
-    try: s.get("https://bet.hkjc.com/index.aspx?lang=en", timeout=5)
+    
+    # 1. 訪問首頁種 Cookie (非常重要)
+    try: 
+        s.get("https://bet.hkjc.com/index.aspx?lang=en", headers=HEADERS_DESKTOP, timeout=5)
     except: pass
     
     err = ""
+    # 輪詢場地
     for v in ["ST", "HV"]:
-        # 這裡改用短變數 d
+        # 先試 JSON
         d = get_json_odds(s, r_no, d_str, v)
+        # 失敗則試 HTML
         if not d:
             d = get_html_odds(s, r_no, d_str, v)
         
@@ -104,7 +138,8 @@ def fetch_data(r_no, t_date):
             df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
             return df, None
         else:
-            err = "無法獲取數據"
+            err = f"API 無回應 (日期: {d_str}, 場地: {v})"
+            
     return None, err
 def gen_demo():
     rows = []
@@ -215,7 +250,10 @@ with st.sidebar:
     
     if app_mode == "📡 實時":
         st.divider()
+        # [修復] 日期選擇器預設為明天 (因為通常是為了預覽)
+        # 或者讓用戶自己選
         sel_date = st.date_input("日期", value=datetime.now(HKT).date())
+        
         sel_race = st.radio("場次", list(range(1, 15)), format_func=lambda x: f"賽事 {x}", horizontal=True)
         st_autorefresh(interval=30000, key="auto_refresh")
         st.divider()
