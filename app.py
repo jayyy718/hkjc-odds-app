@@ -4,17 +4,15 @@ import requests
 import re
 from datetime import datetime, timedelta, timezone
 
-# ===================== V1.54 (Manual Text Intelligence) =====================
-# 核心理念：放棄自動連線賠率（因防火牆），改用「智能文本解析」
-# 排位表：依然自動抓取 (V1.41 核心，這部分很穩定)
-# 賠率：用戶「全選複製」網頁文字，程式自動提取數字
+# ===================== V1.55 (Custom Format Parser) =====================
+# 專門解析格式：馬號、綵衣、馬名、檔位、負磅、騎師、練馬師、獨贏、位置...
 
-st.set_page_config(page_title="賽馬智腦 V1.54", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.55", layout="wide")
 HKT = timezone(timedelta(hours=8))
 
-# ----------------- 1. 自動抓取排位表 (最穩定的部分) -----------------
+# ----------------- 1. 排位表下載 (不變) -----------------
 @st.cache_data(ttl=600)
-def fetch_race_card_v141(date_str, race_no):
+def fetch_race_card(date_str, race_no):
     url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_str}&RaceNo={race_no}"
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -22,89 +20,114 @@ def fetch_race_card_v141(date_str, race_no):
         resp.encoding = 'utf-8'
         
         dfs = pd.read_html(resp.text)
-        target_df = pd.DataFrame()
-        max_rows = 0
+        target = pd.DataFrame()
+        best_len = 0
         
         for df in dfs:
             df.columns = [str(c).replace(' ', '').replace('\r', '').replace('\n', '') for c in df.columns]
-            if len(df) > max_rows and ('馬名' in df.columns or '馬號' in df.columns):
-                target_df = df
-                max_rows = len(df)
+            if len(df) > best_len and ('馬名' in df.columns or '馬號' in df.columns):
+                target = df
+                best_len = len(df)
         
-        if not target_df.empty:
-            if '馬號' in target_df.columns:
-                target_df['馬號'] = pd.to_numeric(target_df['馬號'], errors='coerce')
-            return target_df, f"排位表下載成功 (共{len(target_df)}匹)"
-        return pd.DataFrame(), "錯誤: 找不到排位表格"
+        if not target.empty:
+            if '馬號' in target.columns:
+                target['馬號'] = pd.to_numeric(target['馬號'], errors='coerce')
+            return target, f"成功下載 {len(target)} 匹馬排位"
+        return pd.DataFrame(), "錯誤: 找不到排位表"
     except Exception as e:
-        return pd.DataFrame(), f"連線錯誤: {str(e)}"
+        return pd.DataFrame(), str(e)
 
-# ----------------- 2. 智能文本解析器 (核心武器) -----------------
-def parse_pasted_text(text):
+# ----------------- 2. 定制解析器 (核心) -----------------
+def parse_custom_format(text):
     """
-    強大的解析器：能吃下馬會網頁、App 或任何文字
-    自動尋找「馬號」與「賠率」的關聯
+    針對格式: [馬號] [綵衣] [馬名] [檔位] [負磅] [騎師] [練馬師] [獨贏] ...
+    邏輯：
+    1. 將每一行拆解成單字列表
+    2. 第一個數字通常是 '馬號'
+    3. 嘗試在後面的數據中尋找 '獨贏' (通常是小數點)
     """
     odds_map = {}
     lines = text.strip().split('\n')
-    
-    # 策略 1: 尋找標準行 "1 浪漫勇士 2.3"
-    # Regex: 開頭是數字 -> 中間可能是文字 -> 結尾是小數點數字
-    pattern_standard = re.compile(r'^(\d+)\s+.*?\s+(\d+\.\d+)\s*$')
-    
-    # 策略 2: 簡單對 (馬號, 賠率) "1 2.3"
-    pattern_simple = re.compile(r'^(\d+)\s+(\d+\.\d+)\s*$')
     
     for line in lines:
         line = line.strip()
         if not line: continue
         
-        # 排除掉日期、場次等無關數字
-        if "場" in line or "2025" in line or "月" in line:
+        # 跳過標題行 (如果不小心複製到的話)
+        if "馬號" in line and "獨贏" in line:
             continue
-
-        match = None
+            
+        # 1. 提取所有可能的數據塊 (以空格或Tab分隔)
+        parts = line.split()
         
-        # 嘗試匹配
-        m1 = pattern_standard.search(line)
-        if m1:
-            h_no, h_odds = int(m1.group(1)), float(m1.group(2))
-            if 1 <= h_no <= 14 and 1.0 <= h_odds <= 300.0: # 合理性檢查
-                odds_map[h_no] = h_odds
-                continue
-                
-        m2 = pattern_simple.search(line)
-        if m2:
-            h_no, h_odds = int(m2.group(1)), float(m2.group(2))
-            if 1 <= h_no <= 14 and 1.0 <= h_odds <= 300.0:
-                odds_map[h_no] = h_odds
-                continue
+        # 至少要有 8 個部分才能對應到「獨贏」(根據您的描述)
+        # 但有時候「綵衣」可能是空的，或者「獨贏及位置」是一個欄位
+        # 所以我們用特徵識別比較保險
         
-        # 策略 3: 暴力拆解 (適用於複製了一整塊表格)
-        # 找出該行所有數字
-        nums = re.findall(r'\d+\.\d+|\d+', line)
-        if len(nums) >= 2:
-            # 假設第一個整數是馬號，最後一個浮點數是賠率
-            try:
-                # 找馬號 (第一個整數)
-                curr_no = int(nums[0])
-                # 找賠率 (倒數尋找第一個含小數點的)
-                curr_odds = 0.0
-                found_odds = False
-                for x in reversed(nums):
-                    if '.' in x:
-                        curr_odds = float(x)
-                        found_odds = True
+        if len(parts) < 3: continue
+        
+        try:
+            # --- 步驟 A: 找馬號 ---
+            # 通常是該行的第一個數字
+            h_no = None
+            h_idx = -1
+            
+            for i, p in enumerate(parts):
+                if p.isdigit(): # 純數字
+                    val = int(p)
+                    if 1 <= val <= 14: # 合理馬號範圍
+                        h_no = val
+                        h_idx = i
                         break
+            
+            if h_no is None: continue
+            
+            # --- 步驟 B: 找獨贏 ---
+            # 根據您的順序，獨贏在馬號後面一段距離
+            # 獨贏特徵：通常包含小數點 (e.g. 2.4, 10.0)，但也可能是整數 (e.g. 10)
+            # 且它不應該是檔位 (1-14) 或負磅 (100-135)
+            
+            h_win = None
+            
+            # 從馬號後面開始找
+            potential_odds = parts[h_idx+1:]
+            
+            for p in potential_odds:
+                # 排除純文字 (馬名、騎師、練馬師)
+                # 排除像 "107" (負磅) 這樣的大整數
+                # 排除像 "12" (檔位) 這樣的整數 (這比較難，因為賠率也可能是 12)
                 
-                if found_odds and 1 <= curr_no <= 14:
-                    odds_map[curr_no] = curr_odds
-            except: pass
-
+                # 判斷是否為浮點數
+                if '.' in p:
+                    try:
+                        val = float(p)
+                        # 賠率通常在 1.01 到 999 之間
+                        if 1.0 < val < 500:
+                            h_win = val
+                            break # 找到第一個小數點數字，通常就是獨贏
+                    except: pass
+                
+                # 如果是整數，但看起來像賠率 (例如 99)
+                elif p.isdigit():
+                    try:
+                        val = float(p)
+                        # 如果這個數字不像檔位 (例如 > 14) 且不像負磅 (< 100)
+                        # 或者它出現在很後面
+                        # 這邊保守一點，優先抓含小數點的。如果沒小數點，可能網站顯示格式是 10
+                        # 暫時略過純整數，除非您確定網站賠率會顯示整數
+                        pass 
+                    except: pass
+            
+            if h_no and h_win:
+                odds_map[h_no] = h_win
+                
+        except Exception:
+            continue
+            
     return odds_map
 
 # ----------------- UI 介面 -----------------
-st.title("🏇 賽馬智腦 V1.54 (智能剪貼版)")
+st.title("🏇 賽馬智腦 V1.55 (定制格式版)")
 
 now = datetime.now(HKT)
 def_date = (now + timedelta(days=1)).strftime("%Y/%m/%d") if now.weekday() == 1 else now.strftime("%Y/%m/%d")
@@ -112,65 +135,56 @@ def_date = (now + timedelta(days=1)).strftime("%Y/%m/%d") if now.weekday() == 1 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.info("步驟 1：下載排位表")
+    st.info("1. 下載基礎資料")
     date_in = st.text_input("日期", value=def_date)
     race_in = st.number_input("場次", 1, 14, 1)
     
-    if st.button("📥 下載排位", type="primary"):
-        df, msg = fetch_race_card_v141(date_in, race_in)
-        st.session_state['df_154'] = df
-        st.session_state['msg_154'] = msg
-        # 重置賠率
-        if 'odds_154' in st.session_state: del st.session_state['odds_154']
+    if st.button("📥 下載排位表", type="primary"):
+        df, msg = fetch_race_card(date_in, race_in)
+        st.session_state['df_155'] = df
+        st.session_state['msg_155'] = msg
+        if 'odds_155' in st.session_state: del st.session_state['odds_155']
 
     st.markdown("---")
-    st.info("步驟 2：貼上賠率文字")
-    st.caption("請去馬會/頭條/App 複製賠率頁面的文字，貼在下方：")
+    st.info("2. 貼上賠率 (全選 Ctrl+A -> 複製 Ctrl+C)")
+    st.caption("格式：馬號 ... 馬名 ... 獨贏")
     
-    raw_text = st.text_area("在此貼上 (Ctrl+V)", height=200, placeholder="例如：\n1 號馬 3.5\n2 號馬 10.0\n...")
+    raw_text = st.text_area("貼上區", height=200)
     
-    if st.button("🔄 解析賠率"):
+    if st.button("🔄 解析數據"):
         if raw_text:
-            odds = parse_pasted_text(raw_text)
+            odds = parse_custom_format(raw_text)
             if odds:
-                st.session_state['odds_154'] = odds
-                st.success(f"成功識別 {len(odds)} 匹馬的賠率！")
+                st.session_state['odds_155'] = odds
+                st.success(f"成功抓取 {len(odds)} 筆賠率！")
             else:
-                st.error("無法識別文字中的賠率，請確認內容包含「馬號」與「數字」。")
+                st.error("解析失敗：找不到符合格式的數據，請確認複製內容包含「馬號」與「小數點賠率」。")
 
 with col2:
-    if 'df_154' in st.session_state:
-        df = st.session_state['df_154'].copy()
+    if 'df_155' in st.session_state:
+        df = st.session_state['df_155'].copy()
         
-        # 整合賠率
-        if 'odds_154' in st.session_state:
-            odds_map = st.session_state['odds_154']
+        # 整合
+        if 'odds_155' in st.session_state:
+            odds_map = st.session_state['odds_155']
             df["獨贏"] = df["馬號"].map(odds_map).fillna("-")
             
-            # 計算推薦
+            # 大熱門提示
             try:
                 valid = df[pd.to_numeric(df["獨贏"], errors='coerce').notnull()].copy()
                 if not valid.empty:
-                    valid["Sort"] = valid["獨贏"].astype(float)
-                    best = valid.sort_values("Sort").iloc[0]
-                    st.markdown(f"""
-                    <div style="background:#e8f5e9;padding:10px;border-radius:5px;border:1px solid #4caf50;color:#2e7d32;">
-                        <b>🔥 賠率大熱：#{best['馬號']} {best['馬名']} ({best['獨贏']})</b>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    valid["v"] = valid["獨贏"].astype(float)
+                    valid = valid.sort_values("v")
+                    best = valid.iloc[0]
+                    st.success(f"🔥 大熱門：#{best['馬號']} {best['馬名']} @ {best['獨贏']}")
             except: pass
-            
         else:
             df["獨贏"] = "等待貼上..."
             
         st.subheader(f"第 {race_in} 場排位表")
-        
-        cols = ['馬號', '馬名', '獨贏', '騎師', '練馬師', '檔位']
+        cols = ['馬號', '馬名', '獨贏', '騎師', '練馬師', '檔位', '負磅']
         final = [c for c in cols if c in df.columns]
-        
         st.dataframe(df[final], use_container_width=True, hide_index=True)
         
-    elif 'msg_154' in st.session_state:
-        st.error(st.session_state['msg_154'])
-    else:
-        st.write("👈 請先按左上角的「下載排位」")
+    elif 'msg_155' in st.session_state:
+        st.error(st.session_state['msg_155'])
