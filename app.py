@@ -4,12 +4,11 @@ import numpy as np
 import re
 from datetime import datetime
 
-# ===================== V1.73 (Multi-Race Data Center) =====================
-# 重大升級：支援儲存與查看「多場」比賽。
-# 前台新增：場次選擇下拉選單。
-# 資料結構：改為字典儲存 { "2025-12-17_1": df, "2025-12-17_2": df ... }
+# ===================== V1.74 (Global Shared Database) =====================
+# 核心修復：使用 @st.cache_resource 建立「全域資料庫」。
+# 效果：管理員在自己的電腦上發布資料，其他用戶在別的電腦上也能即時看到。
 
-st.set_page_config(page_title="賽馬智腦 V1.73", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.74", layout="wide")
 
 # --- 核心數據 (不變) ---
 REAL_STATS = {
@@ -37,7 +36,6 @@ def calculate_ai_score(row):
     except: pass
     return score
 
-# --- 排位解析器 (V1.72) ---
 def parse_card_v172(text):
     data = []
     lines = text.strip().split('\n')
@@ -71,7 +69,6 @@ def parse_card_v172(text):
         except: continue
     return pd.DataFrame(data)
 
-# --- 賠率解析器 (V1.71) ---
 def parse_odds_strict_sequence(text):
     odds_map = {}
     lines = [l.strip() for l in text.split('\n') if l.strip()]
@@ -90,15 +87,27 @@ def parse_odds_strict_sequence(text):
         else: i += 1
     return odds_map
 
-# --- Session Initialization ---
-# [關鍵] race_database: 儲存多場比賽的字典
-if 'race_database' not in st.session_state: st.session_state['race_database'] = {}
+# ===================== [關鍵] 全域資料庫 =====================
+
+# 使用 Singleton 模式創建一個簡單的 Class 來儲存資料
+class RaceDatabase:
+    def __init__(self):
+        self.races = {} # { "2025-12-17_Race_1": data }
+
+# 使用 cache_resource 確保這個物件是全伺服器唯一的
+@st.cache_resource
+def get_database():
+    return RaceDatabase()
+
+# 獲取全域資料庫實例
+db = get_database()
+
+# Session State 僅用於當前用戶的 UI 狀態 (例如登入狀態、輸入框內容)
 if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'] = False
-# 預設顯示的日期場次 (給後台用)
 if 'current_edit_info' not in st.session_state: st.session_state['current_edit_info'] = {"date": datetime.now().date(), "no": 1}
 
 # ===================== UI =====================
-st.sidebar.title("🏇 賽馬智腦 V1.73")
+st.sidebar.title("🏇 賽馬智腦 V1.74")
 page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
 
 if page == "🔒 後台管理":
@@ -116,7 +125,6 @@ if page == "🔒 後台管理":
         with c_r: 
             r_in = st.number_input("場次", 1, 14, st.session_state['current_edit_info']['no'])
             
-        # 生成唯一的 Key，例如 "2025-12-17_Race_1"
         race_key = f"{d_in}_Race_{r_in}"
         
         st.divider()
@@ -130,7 +138,7 @@ if page == "🔒 後台管理":
             st.info("賠率 (垂直格式)")
             odds_in = st.text_area("賠率文字", height=300, key=f"odds_{race_key}")
             
-        if st.button(f"🚀 發布第 {r_in} 場資料", type="primary"):
+        if st.button(f"🚀 發布第 {r_in} 場資料 (全網同步)", type="primary"):
             df = parse_card_v172(card_in)
             if not df.empty:
                 if odds_in:
@@ -144,47 +152,41 @@ if page == "🔒 後台管理":
                 total = sum(scores)
                 df['勝率%'] = (df['AI分數']/total*100).round(1) if total>0 else 0.0
                 
-                # [關鍵] 將資料存入字典，Key 為場次ID
-                st.session_state['race_database'][race_key] = {
+                # [關鍵] 寫入全域資料庫
+                db.races[race_key] = {
                     "df": df,
                     "date": str(d_in),
                     "race_no": r_in,
                     "update_time": pd.Timestamp.now().strftime("%H:%M:%S")
                 }
                 
-                # 更新當前編輯狀態
                 st.session_state['current_edit_info'] = {"date": d_in, "no": r_in}
-                st.success(f"成功發布！目前資料庫共有 {len(st.session_state['race_database'])} 場比賽。")
+                st.success(f"成功！資料已同步到伺服器，其他用戶重整頁面後即可看到。")
             else: st.error("排位表解析失敗")
 
 else:
     # --- 公眾看板 ---
     st.title("📊 賽事分析中心")
     
-    # 檢查是否有任何資料
-    if not st.session_state['race_database']:
-        st.info("📭 目前暫無賽事資料，請等待管理員發布。")
+    # 從全域資料庫讀取
+    if not db.races:
+        st.info("📭 暫無資料。管理員發布後，資料會自動出現在這裡。")
     else:
-        # [關鍵] 下拉選單：列出所有已發布的比賽
-        # 排序：按日期和場次排序
-        race_keys = list(st.session_state['race_database'].keys())
-        race_keys.sort() # 簡單排序字串
+        race_keys = list(db.races.keys())
+        race_keys.sort()
         
-        # 顯示選單
         selected_key = st.selectbox(
             "請選擇比賽場次：",
             options=race_keys,
-            format_func=lambda x: f"{st.session_state['race_database'][x]['date']} - 第 {st.session_state['race_database'][x]['race_no']} 場"
+            format_func=lambda x: f"{db.races[x]['date']} - 第 {db.races[x]['race_no']} 場"
         )
         
-        # 根據選擇取出對應的資料
-        race_data = st.session_state['race_database'][selected_key]
+        race_data = db.races[selected_key]
         df = race_data['df'].copy()
         
         st.markdown(f"### 🏁 {race_data['date']} 第 {race_data['race_no']} 場")
         
         df = df.sort_values('勝率%', ascending=False).reset_index(drop=True)
-        
         top4 = df.head(4)
         cols = st.columns(4)
         for i, col in enumerate(cols):
@@ -193,17 +195,16 @@ else:
                 col.metric(f"#{h['馬號']} {h['馬名']}", f"{h['勝率%']}%", f"賠率: {h['獨贏']}")
         
         st.divider()
-        
         display_cols = [c for c in ['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅', '評分', '6次近績'] if c in df.columns]
         
         st.dataframe(
             df[display_cols],
             column_config={
                 "勝率%": st.column_config.ProgressColumn("AI 勝率", format="%.1f%%", min_value=0, max_value=100),
-                "獨贏": st.column_config.TextColumn("獨贏賠率"),
+                "獨贏": st.column_config.TextColumn("賠率"),
                 "馬號": st.column_config.NumberColumn("No.", format="%d"),
             },
             use_container_width=True,
             hide_index=True
         )
-        st.caption(f"最後更新: {race_data['update_time']}")
+        st.caption(f"最後更新: {race_data['update_time']} (全網同步)")
