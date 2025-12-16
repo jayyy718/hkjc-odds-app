@@ -4,10 +4,11 @@ import numpy as np
 import re
 from datetime import datetime
 
-# ===================== V1.75 (Official Release) =====================
-# 新增功能：後台「重置資料庫」按鈕，用於清空測試數據，開始新賽日輸入。
+# ===================== V1.76 (Cache Fix Edition) =====================
+# 修復 AttributeError：透過重新命名快取函數 (get_database_v2) 
+# 強制系統建立包含 clear_all 功能的全新資料庫物件。
 
-st.set_page_config(page_title="賽馬智腦 V1.75", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.76", layout="wide")
 
 # --- 核心數據 (不變) ---
 REAL_STATS = {
@@ -86,26 +87,26 @@ def parse_odds_strict_sequence(text):
         else: i += 1
     return odds_map
 
-# ===================== 全域資料庫 =====================
+# ===================== 全域資料庫 (v2) =====================
 class RaceDatabase:
     def __init__(self):
         self.races = {} 
     
-    # 新增：清空資料庫方法
     def clear_all(self):
         self.races = {}
 
+# [修復關鍵] 改名為 get_database_v2，強制 Streamlit 重新建立物件
 @st.cache_resource
-def get_database():
+def get_database_v2():
     return RaceDatabase()
 
-db = get_database()
+db = get_database_v2()
 
 if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'] = False
 if 'current_edit_info' not in st.session_state: st.session_state['current_edit_info'] = {"date": datetime.now().date(), "no": 1}
 
 # ===================== UI =====================
-st.sidebar.title("🏇 賽馬智腦 V1.75")
+st.sidebar.title("🏇 賽馬智腦 V1.76")
 page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
 
 if page == "🔒 後台管理":
@@ -119,9 +120,13 @@ if page == "🔒 後台管理":
         # --- 重置按鈕區 ---
         with st.expander("⚠️ 危險操作區"):
             if st.button("🗑️ 清空所有賽事資料 (重置系統)", type="secondary"):
-                db.clear_all()
-                st.success("資料庫已清空，您可以開始輸入新賽日的資料了。")
-                st.rerun()
+                try:
+                    db.clear_all()
+                    st.success("資料庫已清空，您可以開始輸入新賽日的資料了。")
+                    # 強制重新整理頁面以反映變更
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"重置失敗: {e}")
                 
         st.subheader("1. 選擇要編輯的場次")
         c_d, c_r = st.columns(2)
