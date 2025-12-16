@@ -1,190 +1,190 @@
 import streamlit as st
 import pandas as pd
-import requests
 import re
-from datetime import datetime, timedelta, timezone
 
-# ===================== V1.55 (Custom Format Parser) =====================
-# 專門解析格式：馬號、綵衣、馬名、檔位、負磅、騎師、練馬師、獨贏、位置...
+# ===================== V1.60 (Admin/User Mode) =====================
+# 核心理念：完全不連網，依賴管理員手動貼上資料
+# 1. 貼上排位表 (來自賽馬天地或其他網站)
+# 2. 貼上賠率表 (來自馬會官網)
+# 3. 系統自動合併並展示
 
-st.set_page_config(page_title="賽馬智腦 V1.55", layout="wide")
-HKT = timezone(timedelta(hours=8))
+st.set_page_config(page_title="賽馬智腦 V1.60", layout="wide")
 
-# ----------------- 1. 排位表下載 (不變) -----------------
-@st.cache_data(ttl=600)
-def fetch_race_card(date_str, race_no):
-    url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_str}&RaceNo={race_no}"
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.encoding = 'utf-8'
-        
-        dfs = pd.read_html(resp.text)
-        target = pd.DataFrame()
-        best_len = 0
-        
-        for df in dfs:
-            df.columns = [str(c).replace(' ', '').replace('\r', '').replace('\n', '') for c in df.columns]
-            if len(df) > best_len and ('馬名' in df.columns or '馬號' in df.columns):
-                target = df
-                best_len = len(df)
-        
-        if not target.empty:
-            if '馬號' in target.columns:
-                target['馬號'] = pd.to_numeric(target['馬號'], errors='coerce')
-            return target, f"成功下載 {len(target)} 匹馬排位"
-        return pd.DataFrame(), "錯誤: 找不到排位表"
-    except Exception as e:
-        return pd.DataFrame(), str(e)
+# 初始化 Session State (模擬資料庫)
+if 'race_data' not in st.session_state:
+    st.session_state['race_data'] = None
+if 'last_update' not in st.session_state:
+    st.session_state['last_update'] = None
 
-# ----------------- 2. 定制解析器 (核心) -----------------
-def parse_custom_format(text):
+# ----------------- 解析邏輯 -----------------
+
+def parse_card_text(text):
     """
-    針對格式: [馬號] [綵衣] [馬名] [檔位] [負磅] [騎師] [練馬師] [獨贏] ...
-    邏輯：
-    1. 將每一行拆解成單字列表
-    2. 第一個數字通常是 '馬號'
-    3. 嘗試在後面的數據中尋找 '獨贏' (通常是小數點)
+    解析排位表文字
+    假設格式大致為： 1 浪漫勇士 6 135 潘頓 沈集成
+    (馬號 馬名 檔位 負磅 騎師 練馬師)
     """
-    odds_map = {}
+    data = []
     lines = text.strip().split('\n')
     
     for line in lines:
         line = line.strip()
         if not line: continue
         
-        # 跳過標題行 (如果不小心複製到的話)
-        if "馬號" in line and "獨贏" in line:
-            continue
-            
-        # 1. 提取所有可能的數據塊 (以空格或Tab分隔)
-        parts = line.split()
-        
-        # 至少要有 8 個部分才能對應到「獨贏」(根據您的描述)
-        # 但有時候「綵衣」可能是空的，或者「獨贏及位置」是一個欄位
-        # 所以我們用特徵識別比較保險
-        
-        if len(parts) < 3: continue
+        # 嘗試抓取關鍵欄位
+        # 尋找開頭是數字 (馬號)
+        # 然後尋找中文 (馬名, 騎師, 練馬師)
+        # 尋找其他數字 (檔位, 負磅)
         
         try:
-            # --- 步驟 A: 找馬號 ---
-            # 通常是該行的第一個數字
-            h_no = None
-            h_idx = -1
+            parts = line.split()
+            if not parts[0].isdigit(): continue
             
-            for i, p in enumerate(parts):
-                if p.isdigit(): # 純數字
-                    val = int(p)
-                    if 1 <= val <= 14: # 合理馬號範圍
-                        h_no = val
-                        h_idx = i
-                        break
+            h_no = int(parts[0])
             
-            if h_no is None: continue
+            # 簡單啟發式分析 (Heuristic Analysis)
+            # 這需要根據您複製的網站格式稍作調整，這裡是用最通用的邏輯
+            # 假設第二個非數字塊是馬名
             
-            # --- 步驟 B: 找獨贏 ---
-            # 根據您的順序，獨贏在馬號後面一段距離
-            # 獨贏特徵：通常包含小數點 (e.g. 2.4, 10.0)，但也可能是整數 (e.g. 10)
-            # 且它不應該是檔位 (1-14) 或負磅 (100-135)
+            row = {'馬號': h_no, '原始資料': line}
             
-            h_win = None
+            # 嘗試提取馬名 (純中文)
+            chinese_parts = [p for p in parts if re.search(r'[\u4e00-\u9fa5]', p)]
+            if len(chinese_parts) >= 1: row['馬名'] = chinese_parts[0]
+            if len(chinese_parts) >= 2: row['騎師'] = chinese_parts[1]
+            if len(chinese_parts) >= 3: row['練馬師'] = chinese_parts[2]
             
-            # 從馬號後面開始找
-            potential_odds = parts[h_idx+1:]
+            # 嘗試提取檔位和負磅 (除了馬號以外的數字)
+            num_parts = [p for p in parts if p.isdigit() and int(p) != h_no]
+            # 簡單判斷：小的通常是檔位(1-14)，大的通常是負磅(100-135)
+            for n in num_parts:
+                val = int(n)
+                if 1 <= val <= 14 and '檔位' not in row: row['檔位'] = val
+                elif 100 <= val <= 135 and '負磅' not in row: row['負磅'] = val
             
-            for p in potential_odds:
-                # 排除純文字 (馬名、騎師、練馬師)
-                # 排除像 "107" (負磅) 這樣的大整數
-                # 排除像 "12" (檔位) 這樣的整數 (這比較難，因為賠率也可能是 12)
-                
-                # 判斷是否為浮點數
-                if '.' in p:
-                    try:
-                        val = float(p)
-                        # 賠率通常在 1.01 到 999 之間
-                        if 1.0 < val < 500:
-                            h_win = val
-                            break # 找到第一個小數點數字，通常就是獨贏
-                    except: pass
-                
-                # 如果是整數，但看起來像賠率 (例如 99)
-                elif p.isdigit():
-                    try:
-                        val = float(p)
-                        # 如果這個數字不像檔位 (例如 > 14) 且不像負磅 (< 100)
-                        # 或者它出現在很後面
-                        # 這邊保守一點，優先抓含小數點的。如果沒小數點，可能網站顯示格式是 10
-                        # 暫時略過純整數，除非您確定網站賠率會顯示整數
-                        pass 
-                    except: pass
-            
-            if h_no and h_win:
-                odds_map[h_no] = h_win
-                
-        except Exception:
+            data.append(row)
+        except:
             continue
+            
+    return pd.DataFrame(data)
+
+def parse_odds_text(text):
+    """
+    解析賠率文字
+    格式： 1 2.5
+    """
+    odds_map = {}
+    lines = text.strip().split('\n')
+    
+    for line in lines:
+        # 尋找行內的 [數字] ... [小數點數字]
+        # Regex: 開頭數字(Group 1) ... 小數點數字(Group 2)
+        match = re.search(r'^(\d+)\s+.*?(\d+\.\d+)', line)
+        if not match:
+            # 嘗試更寬鬆的匹配: 只要有數字和小數點
+            nums = re.findall(r'\d+\.\d+|\d+', line)
+            if len(nums) >= 2:
+                try:
+                    h_no = int(nums[0])
+                    # 倒著找第一個有小數點的
+                    h_win = None
+                    for n in reversed(nums):
+                        if '.' in n: 
+                            h_win = float(n)
+                            break
+                    if h_no and h_win: odds_map[h_no] = h_win
+                except: pass
+        else:
+            try:
+                odds_map[int(match.group(1))] = float(match.group(2))
+            except: pass
             
     return odds_map
 
-# ----------------- UI 介面 -----------------
-st.title("🏇 賽馬智腦 V1.55 (定制格式版)")
+# ----------------- 側邊欄：身份切換 -----------------
+mode = st.sidebar.radio("身份選擇", ["👨‍💻 一般用戶 (查看)", "🔧 管理員 (輸入資料)"])
 
-now = datetime.now(HKT)
-def_date = (now + timedelta(days=1)).strftime("%Y/%m/%d") if now.weekday() == 1 else now.strftime("%Y/%m/%d")
+# ----------------- 頁面邏輯 -----------------
 
-col1, col2 = st.columns([1, 2])
-
-with col1:
-    st.info("1. 下載基礎資料")
-    date_in = st.text_input("日期", value=def_date)
-    race_in = st.number_input("場次", 1, 14, 1)
+if mode == "🔧 管理員 (輸入資料)":
+    st.title("🔧 後台管理系統")
+    st.write("請在此輸入資料，點擊發布後，一般用戶即可看到分析結果。")
     
-    if st.button("📥 下載排位表", type="primary"):
-        df, msg = fetch_race_card(date_in, race_in)
-        st.session_state['df_155'] = df
-        st.session_state['msg_155'] = msg
-        if 'odds_155' in st.session_state: del st.session_state['odds_155']
-
-    st.markdown("---")
-    st.info("2. 貼上賠率 (全選 Ctrl+A -> 複製 Ctrl+C)")
-    st.caption("格式：馬號 ... 馬名 ... 獨贏")
+    col1, col2 = st.columns(2)
     
-    raw_text = st.text_area("貼上區", height=200)
-    
-    if st.button("🔄 解析數據"):
-        if raw_text:
-            odds = parse_custom_format(raw_text)
-            if odds:
-                st.session_state['odds_155'] = odds
-                st.success(f"成功抓取 {len(odds)} 筆賠率！")
-            else:
-                st.error("解析失敗：找不到符合格式的數據，請確認複製內容包含「馬號」與「小數點賠率」。")
-
-with col2:
-    if 'df_155' in st.session_state:
-        df = st.session_state['df_155'].copy()
+    with col1:
+        st.info("步驟 1：貼上排位表 (來自賽馬天地/HKJC)")
+        card_text = st.text_area("排位文字", height=300, placeholder="1 浪漫勇士 1 126 麥道朗 沈集成\n2 金鎗六十 2 126 何澤堯 呂健威\n...")
         
-        # 整合
-        if 'odds_155' in st.session_state:
-            odds_map = st.session_state['odds_155']
-            df["獨贏"] = df["馬號"].map(odds_map).fillna("-")
-            
-            # 大熱門提示
-            try:
-                valid = df[pd.to_numeric(df["獨贏"], errors='coerce').notnull()].copy()
-                if not valid.empty:
-                    valid["v"] = valid["獨贏"].astype(float)
-                    valid = valid.sort_values("v")
-                    best = valid.iloc[0]
-                    st.success(f"🔥 大熱門：#{best['馬號']} {best['馬名']} @ {best['獨贏']}")
-            except: pass
+    with col2:
+        st.info("步驟 2：貼上賠率 (來自馬會/頭條)")
+        odds_text = st.text_area("賠率文字", height=300, placeholder="1 2.3\n2 5.6\n...")
+        
+    if st.button("🚀 發布/更新資料", type="primary"):
+        if not card_text:
+            st.error("請至少貼上排位表！")
         else:
-            df["獨贏"] = "等待貼上..."
+            # 1. 解析排位
+            df_card = parse_card_text(card_text)
             
-        st.subheader(f"第 {race_in} 場排位表")
-        cols = ['馬號', '馬名', '獨贏', '騎師', '練馬師', '檔位', '負磅']
-        final = [c for c in cols if c in df.columns]
-        st.dataframe(df[final], use_container_width=True, hide_index=True)
+            # 2. 解析賠率 (如果有)
+            if odds_text:
+                odds_map = parse_odds_text(odds_text)
+                df_card['獨贏'] = df_card['馬號'].map(odds_map).fillna("-")
+            else:
+                df_card['獨贏'] = "未輸入"
+                
+            # 3. 儲存到全局變數
+            st.session_state['race_data'] = df_card
+            st.session_state['last_update'] = pd.Timestamp.now().strftime("%H:%M:%S")
+            st.success(f"已成功發布 {len(df_card)} 匹馬的資料！請切換至「一般用戶」查看效果。")
+
+else: # 一般用戶模式
+    st.title("🏇 賽馬智腦 V1.60 (公開版)")
+    
+    if st.session_state['race_data'] is None:
+        st.warning("⏳ 管理員尚未發布本場賽事資料，請稍後再試。")
+        st.info("提示：請先切換到左側 sidebar 的「管理員」模式輸入資料。")
+    else:
+        df = st.session_state['race_data'].copy()
+        update_time = st.session_state['last_update']
         
-    elif 'msg_155' in st.session_state:
-        st.error(st.session_state['msg_155'])
+        st.caption(f"最後更新時間: {update_time}")
+        
+        # 智能分析：如果有賠率，算出大熱門
+        try:
+            valid_odds = df[pd.to_numeric(df['獨贏'], errors='coerce').notnull()].copy()
+            if not valid_odds.empty:
+                valid_odds['v'] = valid_odds['獨贏'].astype(float)
+                valid_odds = valid_odds.sort_values('v')
+                
+                # Top 3
+                top3 = valid_odds.head(3)
+                
+                c1, c2, c3 = st.columns(3)
+                if len(top3) > 0:
+                    c1.metric("🥇 第一熱門", f"#{top3.iloc[0]['馬號']} {top3.iloc[0].get('馬名', '')}", f"{top3.iloc[0]['獨贏']}")
+                if len(top3) > 1:
+                    c2.metric("🥈 第二熱門", f"#{top3.iloc[1]['馬號']} {top3.iloc[1].get('馬名', '')}", f"{top3.iloc[1]['獨贏']}")
+                if len(top3) > 2:
+                    c3.metric("🥉 第三熱門", f"#{top3.iloc[2]['馬號']} {top3.iloc[2].get('馬名', '')}", f"{top3.iloc[2]['獨贏']}")
+                
+                st.markdown("---")
+        except: pass
+        
+        # 顯示主表格
+        # 整理欄位順序
+        preferred_cols = ['馬號', '馬名', '獨贏', '騎師', '練馬師', '檔位', '負磅']
+        # 只顯示存在的欄位
+        final_cols = [c for c in preferred_cols if c in df.columns]
+        
+        # 美化表格顯示
+        st.dataframe(
+            df[final_cols],
+            column_config={
+                "獨贏": st.column_config.TextColumn("獨贏賠率", help="即時獨贏賠率"),
+                "馬號": st.column_config.NumberColumn("No.", format="%d"),
+            },
+            use_container_width=True,
+            hide_index=True
+        )
