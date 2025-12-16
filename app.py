@@ -6,11 +6,12 @@ import os
 import requests
 import time
 import random
+from bs4 import BeautifulSoup # 引入手術刀
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.28 (Precision Nav) =====================
-APP_VERSION = "V1.28 (User Layout Fix)"
+# ===================== 版本 V1.29 (BeautifulSoup) =====================
+APP_VERSION = "V1.29 (Raw HTML Surgery)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
@@ -34,125 +35,114 @@ def get_storage():
 
 race_storage = get_storage()
 
-# 關鍵字庫
-JOCKEY_KEYWORDS = ['Purton', 'McDonald', 'Bowman', 'Teetan', 'Ho', 'Bentley', 'Ferraris', 'Hamelin', 'Atzeni', 'De Sousa', 'Avdulla', 'Mo', 'Wong', 'Chau', 'Yeung', 'Poon']
+# 擴充關鍵字庫
+JOCKEY_KEYWORDS = ['Purton', 'McDonald', 'Bowman', 'Teetan', 'Ho', 'Bentley', 'Ferraris', 'Hamelin', 'Atzeni', 'De Sousa', 'Avdulla', 'Mo', 'Wong', 'Chau', 'Yeung', 'Poon', 'Badel', 'Hewitson']
 TRAINER_KEYWORDS = ['Size', 'Lui', 'Hayes', 'Lor', 'Yip', 'Yiu', 'Fownes', 'Whyte', 'Hall', 'Newnham', 'Richards', 'Man', 'Shum', 'So', 'Tsui', 'Ng', 'Chang']
 
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-def find_col_index(row, keywords):
-    """在這一行中尋找包含關鍵字的欄位索引"""
-    for idx, val in enumerate(row):
-        val_str = str(val)
-        if any(k in val_str for k in keywords):
-            return idx
-    return -1
-
-def fetch_scmp_precision(r_no, t_date):
+def fetch_scmp_bs4(r_no, t_date):
     date_str = t_date.strftime("%Y%m%d")
     url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
-    logs = [f"SCMP: {url}"]
+    logs = [f"SCMP (BS4): {url}"]
     
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
-            dfs = pd.read_html(resp.text)
-            logs.append(f"找到 {len(dfs)} 個表格")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            tables = soup.find_all('table')
+            logs.append(f"找到 {len(tables)} 個表格 (Raw HTML)")
+            
+            target_table = None
+            max_rows = 0
             
             # 尋找行數最多的表格
-            target_df = None
-            max_rows = 0
-            for df in dfs:
-                if len(df) > max_rows and len(df) <= 16:
-                    max_rows = len(df)
-                    target_df = df
+            for tbl in tables:
+                rows = tbl.find_all('tr')
+                # 排位表通常在 8-18 行之間
+                if len(rows) >= 8 and len(rows) <= 20:
+                    if len(rows) > max_rows:
+                        max_rows = len(rows)
+                        target_table = tbl
             
-            if target_df is not None:
-                logs.append(f"-> 鎖定 {max_rows} 行表格")
+            if target_table:
+                logs.append(f"-> 鎖定 {max_rows} 行的表格，開始解剖...")
                 
-                # 取第一行非空數據來定位
-                # SCMP 表頭可能是多層的，直接看數據最準
-                first_row = target_df.iloc[0].tolist()
-                
-                # 1. 定位練馬師 (Trainer)
-                # 使用關鍵字 (Size, Lui 等)
-                trainer_idx = find_col_index(first_row, TRAINER_KEYWORDS)
-                
-                # 2. 定位騎師 (Jockey)
-                # 使用關鍵字 (Purton, Bowman 等)
-                jockey_idx = find_col_index(first_row, JOCKEY_KEYWORDS)
-                
-                # 3. 推算其他欄位
-                # 根據用戶情報: Horse 在 Trainer 前面約 4 格
-                # No, LastRuns, Colour(可能消失), Horse, Priority, Wt, Gear, Trainer
-                horse_idx = 2 # 預設值 (假設 Colour 消失)
-                if trainer_idx != -1:
-                    # 如果找到了 Trainer，馬名通常在 Trainer 前面 3 或 4 格
-                    # 嘗試推算: Trainer(6) -> Horse(2) => 差 4
-                    if trainer_idx >= 4:
-                        horse_idx = trainer_idx - 4
-                
-                # 4. 定位賠率 (Win Odds)
-                # 根據用戶情報: Win on td 靠近最後
-                odds_idx = len(first_row) - 2 # 倒數第2欄通常是 Win
-                
-                logs.append(f"定位結果: Horse[{horse_idx}], Trainer[{trainer_idx}], Jockey[{jockey_idx}], Odds[{odds_idx}]")
-                logs.append(f"樣本數據: {first_row}")
-
+                rows = target_table.find_all('tr')
                 res = []
-                for idx, row in target_df.iterrows():
-                    try:
-                        # === 提取馬號與馬名 ===
-                        # 處理 "1PERFECT PAIRING" 這種黏連情況
-                        raw_horse = str(row.iloc[horse_idx])
+                
+                # 掃描每一行
+                for r_idx, row in enumerate(rows):
+                    cells = row.find_all(['td', 'th'])
+                    # 提取純文字
+                    row_data = [c.get_text(strip=True) for c in cells]
+                    
+                    if not row_ continue
+                    
+                    # 判斷這行是不是馬匹數據行
+                    # 條件：必須包含一個可能是馬號的數字 (1-14)，且長度足夠
+                    # 或包含騎師/練馬師關鍵字
+                    
+                    # 嘗試識別各個欄位
+                    h_no = 0
+                    h_name = "未知"
+                    jock = "未知"
+                    trn = "未知"
+                    odds = 0.0
+                    
+                    is_valid_row = False
+                    
+                    for i, txt in enumerate(row_data):
+                        # 1. 找馬號 (通常在第0或1格，純數字)
+                        if h_no == 0 and re.match(r'^\d+$', txt):
+                            val = int(txt)
+                            if 1 <= val <= 24: # 合理馬號範圍
+                                h_no = val
+                                is_valid_row = True
                         
-                        h_no = idx + 1 # 預設
-                        h_name = raw_horse
-                        
-                        # 分離數字與名稱
-                        # 匹配開頭的數字 (馬號)
-                        m_no = re.match(r'^(\d+)', raw_horse)
-                        if m_no:
-                            h_no = int(m_no.group(1))
-                            # 去掉開頭的數字，剩下的就是馬名
-                            h_name = re.sub(r'^\d+', '', raw_horse).strip()
-                        
-                        # 如果馬名還是怪怪的 (比如全是數字)，可能抓錯欄位了
-                        # 嘗試去上一欄或下一欄找純字母的
-                        if not re.search(r'[A-Z]', h_name):
-                             # 雙保險：掃描整行找純大寫字母
-                             for cell in row:
-                                 s = str(cell).strip()
-                                 if s.isupper() and len(s) > 3 and not any(k in s for k in TRAINER_KEYWORDS + JOCKEY_KEYWORDS):
-                                     h_name = s
-                                     break
+                        # 2. 找騎師
+                        if jock == "未知" and any(k in txt for k in JOCKEY_KEYWORDS):
+                            jock = txt
+                            is_valid_row = True
+                            
+                        # 3. 找練馬師
+                        if trn == "未知" and any(k in txt for k in TRAINER_KEYWORDS):
+                            trn = txt
+                            is_valid_row = True
+                            
+                        # 4. 找馬名 (全大寫英文，排除 LAST RUNS 這種標題)
+                        if h_name == "未知" and re.match(r'^[A-Z\s\']+$', txt) and len(txt) > 3:
+                            if "LAST RUNS" not in txt and "HORSE" not in txt and "JOCKEY" not in txt:
+                                # 排除騎師練馬師名字
+                                if not any(k.upper() in txt for k in JOCKEY_KEYWORDS + TRAINER_KEYWORDS):
+                                    h_name = txt
+                                    is_valid_row = True
+                                    
+                        # 5. 找賠率 (小數點)
+                        if odds == 0.0 and re.match(r'^\d+\.\d+$', txt):
+                            try:
+                                v = float(txt)
+                                if 1.0 < v < 200.0: # 合理賠率範圍
+                                    odds = v
+                            except: pass
 
-                        # === 提取騎師與練馬師 ===
-                        jock = "未知"
-                        if jockey_idx != -1: jock = str(row.iloc[jockey_idx])
-                        
-                        trn = "未知"
-                        if trainer_idx != -1: trn = str(row.iloc[trainer_idx])
-                        
-                        # 清理括號
-                        jock = re.sub(r'\s*\(.*?\)', '', jock)
-                        
-                        # === 提取賠率 ===
-                        odds = 0.0
-                        # 優先試 odds_idx
-                        raw_odds = str(row.iloc[odds_idx])
-                        m_odds = re.search(r'(\d+\.\d+|\d+)', raw_odds)
-                        if m_odds:
-                            odds = float(m_odds.group(1))
-                        else:
-                            # 如果失敗，掃描最後 3 欄找小數點
-                            for i in range(1, 4):
-                                val = str(row.iloc[-i])
-                                if re.match(r'^\d+\.\d+$', val):
-                                    odds = float(val)
+                    # 特殊處理：黏連修復 (例如 "1PERFECT PAIRING")
+                    # 如果找不到馬號，檢查第一個有內容的格子
+                    if h_no == 0:
+                        for txt in row_
+                            if txt:
+                                m = re.match(r'^(\d+)([A-Z\s]+)$', txt)
+                                if m:
+                                    h_no = int(m.group(1))
+                                    if h_name == "未知": h_name = m.group(2).strip()
+                                    is_valid_row = True
                                     break
 
+                    if is_valid_row and h_no > 0:
+                        # 清理數據
+                        jock = re.sub(r'\s*\(.*?\)', '', jock)
+                        
                         res.append({
                             "馬號": h_no,
                             "馬名": h_name,
@@ -160,39 +150,73 @@ def fetch_scmp_precision(r_no, t_date):
                             "練馬師": trn,
                             "現價": odds
                         })
-                    except Exception as ex:
-                        pass # 忽略解析錯誤的行
                 
                 if res:
+                    logs.append(f"成功提取 {len(res)} 匹馬")
+                    # 預覽第一匹
+                    logs.append(f"First: {res[0]}")
                     return pd.DataFrame(res), "\n".join(logs)
                 else:
-                    logs.append("解析後無數據")
+                    logs.append("雖然找到表格，但無法識別任何馬匹數據 (HTML 結構可能變異)")
+                    # Debug: 印出第一行的 raw text
+                    if len(rows) > 1:
+                         first_row_cells = rows[1].find_all(['td', 'th'])
+                         logs.append(f"Row 1 Raw: {[c.get_text(strip=True) for c in first_row_cells]}")
+
             else:
-                logs.append("找不到合適表格")
+                logs.append("找不到符合行數條件的表格")
                 
     except Exception as e:
-        logs.append(f"SCMP Error: {e}")
+        logs.append(f"BS4 Error: {e}")
         
     return None, "\n".join(logs)
+def fetch_hkjc_fallback_log(r_no):
+    """只記錄 HKJC 狀態，不依賴"""
+    url = "https://bet.hkjc.com/racing/jsonData.aspx"
+    try:
+        params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
+        requests.get(url, params=params, headers=HEADERS, timeout=3)
+    except: pass
+    return {}
+
 def fetch_data(r_no, t_date):
     full_log = "=== 開始更新 ===\n"
     
-    # 1. SCMP 精確導航
-    df, log = fetch_scmp_precision(r_no, t_date)
+    # 1. SCMP 手術刀解析
+    df, log = fetch_scmp_bs4(r_no, t_date)
     full_log += log + "\n"
     
-    # 如果 SCMP 成功，直接返回 (不再依賴 HKJC，因為它壞了)
     if df is not None and not df.empty:
+        # 賠率補救：如果 SCMP 沒抓到賠率 (全0)，試試 HKJC
+        if df["現價"].sum() == 0:
+            full_log += "SCMP 賠率缺失，嘗試 HKJC 正則補位...\n"
+            try:
+                # 這裡重用之前的 HKJC regex 邏輯，但放在這裡避免代碼太長
+                url = "https://bet.hkjc.com/racing/jsonData.aspx"
+                params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
+                resp = requests.get(url, params=params, headers=HEADERS, timeout=4)
+                odds_map = {}
+                matches = re.findall(r'\b(\d+)=([\d\.]+)', resp.text)
+                for m in matches: odds_map[int(m[0])] = float(m[1])
+                if not odds_map:
+                    matches = re.findall(r'"(\d+)":"([\d\.]+)"', resp.text)
+                    for m in matches: odds_map[int(m[0])] = float(m[1])
+                
+                if odds_map:
+                    df["現價"] = df["馬號"].map(odds_map).fillna(0.0)
+                    full_log += f"HKJC 補位成功: {len(odds_map)} 筆\n"
+                else:
+                    full_log += "HKJC 無數據\n"
+            except: pass
+            
         return df, full_log
         
-    return None, full_log + "SCMP 失敗\n"
+    return None, full_log + "SCMP 解析失敗\n"
 
 def get_score(row):
     s = 0
     o = row.get("現價", 0)
-    # 賠率為 0 不給分
     if o <= 0: return 0
-    
     if o > 0 and o <= 5.0: s += 25
     elif o > 5.0 and o <= 10.0: s += 10
     tr = row.get("走勢", 0)
@@ -312,7 +336,7 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 精確導航更新", type="primary", use_container_width=True):
+        if st.button("🔄 手術刀更新 (BS4)", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
                 log = "Demo"
@@ -341,7 +365,7 @@ if app_mode == "📡 實時":
     
     with c2: 
         st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-        with st.expander("📝 導航日誌 (Navigation Log)", expanded=True):
+        with st.expander("📝 解剖日誌 (Surgery Log)", expanded=True):
             st.code(curr["debug_info"])
 
     with st.expander("🛠️ 排位資料"):
