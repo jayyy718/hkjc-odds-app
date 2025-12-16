@@ -9,16 +9,13 @@ import json
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 
-# ===================== 版本 V1.36 (Final Single Block) =====================
-APP_VERSION = "V1.36 (Stable)"
+# ----------------- 全局變數 -----------------
+APP_VERSION = "V1.37 (Flat Structure)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
-
+# ----------------- 快取設置 -----------------
 @st.cache_resource
 def get_storage():
     data = {}
@@ -34,32 +31,22 @@ def get_storage():
 
 race_storage = get_storage()
 
-JOCKEY_DB = [
-    'Z Purton', 'Purton', 'J McDonald', 'McDonald', 'H Bowman', 'Bowman', 
-    'K Teetan', 'Teetan', 'C Y Ho', 'Ho', 'L Ferraris', 'Ferraris', 
-    'H Bentley', 'Bentley', 'A Badel', 'Badel', 'M Chadwick', 'Chadwick',
-    'A Atzeni', 'Atzeni', 'L Hewitson', 'Hewitson', 'K De Melo', 'De Melo',
-    'B Avdulla', 'Avdulla', 'M F Poon', 'Poon', 'K H Chan', 'Chan',
-    'E C W Wong', 'Wong', 'H T Mo', 'Mo', 'C L Chau', 'Chau'
-]
+# ----------------- 資料庫定義 -----------------
+JOCKEY_DB = ['Z Purton', 'Purton', 'J McDonald', 'McDonald', 'H Bowman', 'Bowman', 'K Teetan', 'Teetan', 'C Y Ho', 'Ho', 'L Ferraris', 'Ferraris', 'H Bentley', 'Bentley', 'A Badel', 'Badel', 'M Chadwick', 'Chadwick', 'A Atzeni', 'Atzeni', 'L Hewitson', 'Hewitson', 'K De Melo', 'De Melo', 'B Avdulla', 'Avdulla', 'M F Poon', 'Poon', 'K H Chan', 'Chan', 'E C W Wong', 'Wong', 'H T Mo', 'Mo', 'C L Chau', 'Chau']
 
-TRAINER_DB = [
-    'J Size', 'Size', 'K W Lui', 'Lui', 'P C Ng', 'Ng', 'F C Lor', 'Lor',
-    'C S Shum', 'Shum', 'P F Yiu', 'Yiu', 'A S Cruz', 'Cruz', 'C Fownes', 'Fownes',
-    'D J Whyte', 'Whyte', 'D J Hall', 'Hall', 'M Newnham', 'Newnham',
-    'J Richards', 'Richards', 'K L Man', 'Man', 'W Y So', 'So', 'T P Yung', 'Yung',
-    'Y S Tsui', 'Tsui', 'C H Yip', 'Yip', 'C W Chang', 'Chang'
-]
+TRAINER_DB = ['J Size', 'Size', 'K W Lui', 'Lui', 'P C Ng', 'Ng', 'F C Lor', 'Lor', 'C S Shum', 'Shum', 'P F Yiu', 'Yiu', 'A S Cruz', 'Cruz', 'C Fownes', 'Fownes', 'D J Whyte', 'Whyte', 'D J Hall', 'Hall', 'M Newnham', 'Newnham', 'J Richards', 'Richards', 'K L Man', 'Man', 'W Y So', 'So', 'T P Yung', 'Yung', 'Y S Tsui', 'Tsui', 'C H Yip', 'Yip', 'C W Chang', 'Chang']
 
 JOCKEY_RANK = {'Purton': 9.5, 'McDonald': 9.0, 'Bowman': 8.5, 'Teetan': 7.5, 'Ho': 8.0, 'Ferraris': 6.5, 'Bentley': 7.0}
 TRAINER_RANK = {'Size': 9.0, 'Lui': 8.5, 'Ng': 8.5, 'Lor': 8.0, 'Shum': 8.0, 'Yiu': 7.5, 'Cruz': 8.5, 'Fownes': 8.0}
 
+# ----------------- 輔助函數 -----------------
 def get_score(row):
     s = 0
     o = row.get("現價", 0)
     if o <= 0: return 0
-    if o > 0 and o <= 5.0: s += 25
-    elif o > 5.0 and o <= 10.0: s += 10
+    
+    if o <= 5.0: s += 25
+    elif o <= 10.0: s += 10
     
     tr = row.get("走勢", 0)
     if tr >= 15: s += 50
@@ -67,80 +54,65 @@ def get_score(row):
     elif tr >= 5: s += 20
     elif tr <= -10: s -= 20
     
-    j = str(row.get("騎師", ""))
-    t = str(row.get("練馬師", ""))
+    j_str = str(row.get("騎師", ""))
+    t_str = str(row.get("練馬師", ""))
     
     for k, v in JOCKEY_RANK.items():
-        if k in j: s += v * 2.5
+        if k in j_str: s += v * 2.5
     for k, v in TRAINER_RANK.items():
-        if k in t: s += v * 1.5
+        if k in t_str: s += v * 1.5
     return round(s, 1)
 
 def get_lvl(s):
     if s >= 80: return "A"
-    elif s >= 70: return "B"
-    elif s >= 60: return "C"
-    else: return "-"
+    if s >= 70: return "B"
+    if s >= 60: return "C"
+    return "-"
 
 def extract_horse_data_from_text(text):
-    """從純文字中挖掘馬匹數據"""
     lines = text.split('\n')
     res = []
     current_horse = {}
-    
-    # 匹配 "1  ROMANTIC WARRIOR"
     horse_pattern = re.compile(r'^(\d{1,2})\s+([A-Z\s\']{3,30})$')
     
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
+        if not line: continue
             
         m = horse_pattern.match(line)
         if m:
-            if current_horse:
-                res.append(current_horse)
-            
+            if current_horse: res.append(current_horse)
             h_no = int(m.group(1))
             h_name = m.group(2).strip()
-            
             if h_name not in ["HORSE", "JOCKEY", "TRAINER", "LAST RUNS"]:
-                current_horse = {
-                    "馬號": h_no,
-                    "馬名": h_name,
-                    "騎師": "未知",
-                    "練馬師": "未知",
-                    "現價": 0.0
-                }
+                current_horse = {"馬號": h_no, "馬名": h_name, "騎師": "未知", "練馬師": "未知", "現價": 0.0}
+            else:
+                current_horse = {}
+            continue
         
-        elif current_horse:
-            # 找騎師
-            if current_horse["騎師"] == "未知":
-                for j in JOCKEY_DB:
-                    if j in line:
-                        current_horse["騎師"] = j
-                        break
-            
-            # 找練馬師
-            if current_horse["練馬師"] == "未知":
-                for t in TRAINER_DB:
-                    if t in line:
-                        current_horse["練馬師"] = t
-                        break
-                        
-            # 找賠率
-            if current_horse["現價"] == 0.0:
-                odds_match = re.search(r'\b(\d+\.\d+)\b', line)
-                if odds_match:
-                    try:
-                        val = float(odds_match.group(1))
-                        if 1.0 < val < 200.0:
-                            current_horse["現價"] = val
-                    except: pass
+        if not current_horse: continue
 
-    if current_horse:
-        res.append(current_horse)
+        if current_horse.get("騎師") == "未知":
+            for j in JOCKEY_DB:
+                if j in line:
+                    current_horse["騎師"] = j
+                    break
         
+        if current_horse.get("練馬師") == "未知":
+            for t in TRAINER_DB:
+                if t in line:
+                    current_horse["練馬師"] = t
+                    break
+                        
+        if current_horse.get("現價") == 0.0:
+            odds_match = re.search(r'\b(\d+\.\d+)\b', line)
+            if odds_match:
+                try:
+                    val = float(odds_match.group(1))
+                    if 1.0 < val < 200.0: current_horse["現價"] = val
+                except: pass
+
+    if current_horse: res.append(current_horse)
     return res
 
 def fetch_scmp_text_mining(r_no, t_date):
@@ -150,37 +122,34 @@ def fetch_scmp_text_mining(r_no, t_date):
     
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            main_content = soup.find('div', class_='racecard') 
-            if not main_content:
-                main_content = soup.find('body')
-            
-            raw_text = main_content.get_text(separator='\n')
-            data = extract_horse_data_from_text(raw_text)
-            
-            if 
-                logs.append(f"挖掘成功: {len(data)} 匹馬")
-                df = pd.DataFrame(data)
-                return df, "\n".join(logs)
-            else:
-                logs.append("挖掘失敗")
-                logs.append(f"Preview: {raw_text[:100]}...")
-        else:
+        if resp.status_code != 200:
             logs.append(f"HTTP Error: {resp.status_code}")
+            return None, "\n".join(logs)
+            
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        main_content = soup.find('div', class_='racecard') 
+        if not main_content: main_content = soup.find('body')
+        
+        raw_text = main_content.get_text(separator='\n')
+        data = extract_horse_data_from_text(raw_text)
+        
+        if 
+            logs.append(f"挖掘成功: {len(data)} 匹馬")
+            return pd.DataFrame(data), "\n".join(logs)
+        else:
+            logs.append("挖掘失敗")
+            return None, "\n".join(logs)
+
     except Exception as e:
         logs.append(f"Error: {e}")
-        
-    return None, "\n".join(logs)
+        return None, "\n".join(logs)
 
 def fetch_data(r_no, t_date):
-    full_log = "=== V1.36 更新 ===\n"
+    full_log = "=== V1.37 更新 ===\n"
     df, log = fetch_scmp_text_mining(r_no, t_date)
     full_log += log + "\n"
     
     if df is not None and not df.empty:
-        # HKJC 補位
         if df["現價"].sum() == 0:
             full_log += "HKJC 補位...\n"
             try:
@@ -188,11 +157,13 @@ def fetch_data(r_no, t_date):
                 params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
                 resp = requests.get(url, params=params, headers=HEADERS, timeout=3)
                 odds_map = {}
-                matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
-                for m in matches: odds_map[int(m[0])] = float(m[1])
+                matches1 = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
+                for m in matches1: odds_map[int(m[0])] = float(m[1])
+                
                 if not odds_map:
-                    matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
-                    for m in matches: odds_map[int(m[0])] = float(m[1])
+                    matches2 = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
+                    for m in matches2: odds_map[int(m[0])] = float(m[1])
+                    
                 if odds_map:
                     df["現價"] = df["馬號"].map(odds_map).fillna(0.0)
                     full_log += f"HKJC OK: {len(odds_map)}\n"
@@ -226,19 +197,19 @@ def save_hist(store):
                 "info": v["raw_info_text"],
                 "time": v["last_update"]
             }
-    if ex:
-        full = {}
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f: full = json.load(f)
-            except: pass
-        full[td] = ex
+    if not ex: return False, "無數據"
+    
+    full = {}
+    if os.path.exists(HISTORY_FILE):
         try:
-            with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-                json.dump(full, f, ensure_ascii=False, indent=4)
-            return True, "已封存"
-        except Exception as e: return False, str(e)
-    return False, "無數據"
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f: full = json.load(f)
+        except: pass
+    full[td] = ex
+    try:
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(full, f, ensure_ascii=False, indent=4)
+        return True, "已封存"
+    except Exception as e: return False, str(e)
 
 def load_hist():
     if os.path.exists(HISTORY_FILE):
@@ -247,15 +218,13 @@ def load_hist():
         except: pass
     return {}
 
-# UI
+# ----------------- UI 邏輯 -----------------
 st.set_page_config(page_title=f"賽馬智腦 {APP_VERSION}", layout="wide")
 st.markdown("""
 <style>
     .stApp, .stApp > header { background-color: #f5f7f9 !important; }
-    .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, 
-    .stMarkdown h4, .stMarkdown h5, .stMarkdown h6, .stMarkdown span,
-    .stText, .stCode, div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"],
-    .stCaption { color: #000000 !important; }
+    .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 { color: #000000 !important; }
+    .stText, .stCode, div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"] { color: #000000 !important; }
     section[data-testid="stSidebar"] { background-color: #ffffff !important; border-right: 1px solid #e0e0e0; }
     section[data-testid="stSidebar"] * { color: #333333 !important; }
     div[data-testid="stDataFrame"] div[role="grid"] { color: #000000 !important; background-color: #ffffff !important; }
