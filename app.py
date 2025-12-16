@@ -4,11 +4,13 @@ import re
 import requests
 import time
 import random
+import os
+import json
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 
-# ===================== 版本 V1.35 (Flat Logic) =====================
-APP_VERSION = "V1.35 (Stable Layout)"
+# ===================== 版本 V1.36 (Final Single Block) =====================
+APP_VERSION = "V1.36 (Stable)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
@@ -51,132 +53,7 @@ TRAINER_DB = [
 
 JOCKEY_RANK = {'Purton': 9.5, 'McDonald': 9.0, 'Bowman': 8.5, 'Teetan': 7.5, 'Ho': 8.0, 'Ferraris': 6.5, 'Bentley': 7.0}
 TRAINER_RANK = {'Size': 9.0, 'Lui': 8.5, 'Ng': 8.5, 'Lor': 8.0, 'Shum': 8.0, 'Yiu': 7.5, 'Cruz': 8.5, 'Fownes': 8.0}
-def extract_horse_data_from_text(text):
-    """簡化版挖掘邏輯，避免縮排錯誤"""
-    lines = text.split('\n')
-    res = []
-    current_horse = {}
-    
-    # 匹配 "1  ROMANTIC WARRIOR"
-    horse_pattern = re.compile(r'^(\d{1,2})\s+([A-Z\s\']{3,30})$')
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        m = horse_pattern.match(line)
-        
-        # 情況 1: 發現新馬匹
-        if m:
-            # 儲存上一匹
-            if current_horse:
-                res.append(current_horse)
-            
-            # 初始化新馬匹
-            h_name = m.group(2).strip()
-            # 排除標題
-            if h_name in ["HORSE", "JOCKEY", "TRAINER", "LAST RUNS"]:
-                current_horse = {} # 無效
-            else:
-                current_horse = {
-                    "馬號": int(m.group(1)),
-                    "馬名": h_name,
-                    "騎師": "未知",
-                    "練馬師": "未知",
-                    "現價": 0.0
-                }
-            continue
 
-        # 情況 2: 正在處理馬匹數據
-        if not current_horse:
-            continue
-            
-        # 找騎師
-        if current_horse["騎師"] == "未知":
-            for j in JOCKEY_DB:
-                if j in line:
-                    current_horse["騎師"] = j
-                    break
-        
-        # 找練馬師
-        if current_horse["練馬師"] == "未知":
-            for t in TRAINER_DB:
-                if t in line:
-                    current_horse["練馬師"] = t
-                    break
-                    
-        # 找賠率
-        if current_horse["現價"] == 0.0:
-            odds_match = re.search(r'\b(\d+\.\d+)\b', line)
-            if odds_match:
-                try:
-                    val = float(odds_match.group(1))
-                    if 1.0 < val < 200.0:
-                        current_horse["現價"] = val
-                except:
-                    pass
-
-    # 迴圈結束後，加入最後一匹
-    if current_horse:
-        res.append(current_horse)
-        
-    return res
-
-def fetch_scmp_text_mining(r_no, t_date):
-    date_str = t_date.strftime("%Y%m%d")
-    url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
-    logs = [f"SCMP Text: {url}"]
-    
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            main_content = soup.find('div', class_='racecard') 
-            if not main_content:
-                main_content = soup.find('body')
-            
-            raw_text = main_content.get_text(separator='\n')
-            data = extract_horse_data_from_text(raw_text)
-            
-            if 
-                logs.append(f"挖掘成功: {len(data)} 匹馬")
-                return pd.DataFrame(data), "\n".join(logs)
-            else:
-                logs.append("挖掘失敗")
-        else:
-            logs.append(f"HTTP Error: {resp.status_code}")
-    except Exception as e:
-        logs.append(f"Error: {e}")
-        
-    return None, "\n".join(logs)
-
-def fetch_data(r_no, t_date):
-    full_log = "=== V1.35 更新 ===\n"
-    df, log = fetch_scmp_text_mining(r_no, t_date)
-    full_log += log + "\n"
-    
-    if df is not None and not df.empty:
-        # HKJC 補位
-        if df["現價"].sum() == 0:
-            full_log += "HKJC 補位...\n"
-            try:
-                url = "https://bet.hkjc.com/racing/jsonData.aspx"
-                params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
-                resp = requests.get(url, params=params, headers=HEADERS, timeout=3)
-                odds_map = {}
-                matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
-                for m in matches: odds_map[int(m[0])] = float(m[1])
-                if not odds_map:
-                    matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
-                    for m in matches: odds_map[int(m[0])] = float(m[1])
-                if odds_map:
-                    df["現價"] = df["馬號"].map(odds_map).fillna(0.0)
-                    full_log += f"HKJC OK: {len(odds_map)}\n"
-            except: pass
-        return df, full_log
-    return None, full_log
 def get_score(row):
     s = 0
     o = row.get("現價", 0)
@@ -205,6 +82,124 @@ def get_lvl(s):
     elif s >= 60: return "C"
     else: return "-"
 
+def extract_horse_data_from_text(text):
+    """從純文字中挖掘馬匹數據"""
+    lines = text.split('\n')
+    res = []
+    current_horse = {}
+    
+    # 匹配 "1  ROMANTIC WARRIOR"
+    horse_pattern = re.compile(r'^(\d{1,2})\s+([A-Z\s\']{3,30})$')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        m = horse_pattern.match(line)
+        if m:
+            if current_horse:
+                res.append(current_horse)
+            
+            h_no = int(m.group(1))
+            h_name = m.group(2).strip()
+            
+            if h_name not in ["HORSE", "JOCKEY", "TRAINER", "LAST RUNS"]:
+                current_horse = {
+                    "馬號": h_no,
+                    "馬名": h_name,
+                    "騎師": "未知",
+                    "練馬師": "未知",
+                    "現價": 0.0
+                }
+        
+        elif current_horse:
+            # 找騎師
+            if current_horse["騎師"] == "未知":
+                for j in JOCKEY_DB:
+                    if j in line:
+                        current_horse["騎師"] = j
+                        break
+            
+            # 找練馬師
+            if current_horse["練馬師"] == "未知":
+                for t in TRAINER_DB:
+                    if t in line:
+                        current_horse["練馬師"] = t
+                        break
+                        
+            # 找賠率
+            if current_horse["現價"] == 0.0:
+                odds_match = re.search(r'\b(\d+\.\d+)\b', line)
+                if odds_match:
+                    try:
+                        val = float(odds_match.group(1))
+                        if 1.0 < val < 200.0:
+                            current_horse["現價"] = val
+                    except: pass
+
+    if current_horse:
+        res.append(current_horse)
+        
+    return res
+
+def fetch_scmp_text_mining(r_no, t_date):
+    date_str = t_date.strftime("%Y%m%d")
+    url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
+    logs = [f"SCMP Text: {url}"]
+    
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            main_content = soup.find('div', class_='racecard') 
+            if not main_content:
+                main_content = soup.find('body')
+            
+            raw_text = main_content.get_text(separator='\n')
+            data = extract_horse_data_from_text(raw_text)
+            
+            if 
+                logs.append(f"挖掘成功: {len(data)} 匹馬")
+                df = pd.DataFrame(data)
+                return df, "\n".join(logs)
+            else:
+                logs.append("挖掘失敗")
+                logs.append(f"Preview: {raw_text[:100]}...")
+        else:
+            logs.append(f"HTTP Error: {resp.status_code}")
+    except Exception as e:
+        logs.append(f"Error: {e}")
+        
+    return None, "\n".join(logs)
+
+def fetch_data(r_no, t_date):
+    full_log = "=== V1.36 更新 ===\n"
+    df, log = fetch_scmp_text_mining(r_no, t_date)
+    full_log += log + "\n"
+    
+    if df is not None and not df.empty:
+        # HKJC 補位
+        if df["現價"].sum() == 0:
+            full_log += "HKJC 補位...\n"
+            try:
+                url = "https://bet.hkjc.com/racing/jsonData.aspx"
+                params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
+                resp = requests.get(url, params=params, headers=HEADERS, timeout=3)
+                odds_map = {}
+                matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
+                for m in matches: odds_map[int(m[0])] = float(m[1])
+                if not odds_map:
+                    matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
+                    for m in matches: odds_map[int(m[0])] = float(m[1])
+                if odds_map:
+                    df["現價"] = df["馬號"].map(odds_map).fillna(0.0)
+                    full_log += f"HKJC OK: {len(odds_map)}\n"
+            except: pass
+        return df, full_log
+    return None, full_log
+
 def parse_info(txt):
     rows = []
     if not txt: return pd.DataFrame()
@@ -222,7 +217,6 @@ def parse_info(txt):
     return pd.DataFrame()
 
 def save_hist(store):
-    import json
     ex = {}
     td = datetime.now(HKT).strftime("%Y-%m-%d")
     for r, v in store.items():
@@ -247,7 +241,6 @@ def save_hist(store):
     return False, "無數據"
 
 def load_hist():
-    import json
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
