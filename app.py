@@ -1,130 +1,210 @@
 import streamlit as st
 import pandas as pd
-import re
 import requests
-import time
+import re
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 
-# ===================== V1.39 進階修復版 =====================
-st.set_page_config(page_title="賽馬智腦 Pro", layout="wide")
+# ===================== V1.40 (SCMP Direct + Auto Date) =====================
+# 這個版本解決了「今日無賽事」導致崩潰的問題
+# 它會自動尋找「下一個賽馬日」的數據
 
-# 1. 基礎設定
+st.set_page_config(page_title="賽馬智腦 V1.40", layout="wide")
 HKT = timezone(timedelta(hours=8))
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-RACE_STORAGE = {}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
-if 'race_data' not in st.session_state:
-    st.session_state['race_data'] = {}
+# ----------------- 核心邏輯：尋找賽事日期 -----------------
+def get_next_race_date():
+    """
+    自動偵測：檢查今天、明天、後天是否有賽程
+    回傳：(日期字串 YYYYMMDD, 顯示文字)
+    """
+    base_date = datetime.now(HKT)
+    
+    # 檢查未來 3 天
+    for i in range(3):
+        check_date = base_date + timedelta(days=i)
+        date_str = check_date.strftime("%Y%m%d")
+        url = f"https://racing.scmp.com/racing/race-card/{date_str}"
+        
+        try:
+            # 只用 HEAD 請求來快速檢查頁面是否存在，減少等待
+            resp = requests.head(url, headers=HEADERS, timeout=3)
+            if resp.status_code == 200:
+                display_text = "今日賽事" if i == 0 else f"預讀：{check_date.strftime('%Y-%m-%d')} (週{'一二三四五六日'[check_date.weekday()]})"
+                return date_str, display_text
+        except:
+            continue
+            
+    # 如果都找不到，回傳今天（讓程式至少跑起來顯示無數據）
+    return base_date.strftime("%Y%m%d"), "暫無近期賽事"
 
-# 2. 核心函數 (保持扁平)
-def get_hkjc_odds(r_no):
-    """抓取 HKJC 賠率"""
+# ----------------- 核心邏輯：SCMP 爬蟲 -----------------
+@st.cache_data(ttl=300) # 快取 5 分鐘，避免頻繁請求
+def fetch_scmp_race_card(date_str, race_no):
+    """
+    直接解析 SCMP 的 HTML 表格
+    """
+    url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{race_no}"
+    log = f"正在連線: {url}\n"
+    
     try:
-        url = "https://bet.hkjc.com/racing/jsonData.aspx"
-        params = {
-            "type": "winodds", 
-            "date": datetime.now(HKT).strftime("%Y-%m-%d"), 
-            "venue": "HV", 
-            "start": r_no, "end": r_no
-        }
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=5)
-        # 解析兩種常見格式
-        matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
-        if not matches:
-            matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
-        return {int(m[0]): float(m[1]) for m in matches}
-    except:
-        return {}
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code != 200:
+            return pd.DataFrame(), f"連線失敗: {resp.status_code}", False
 
-def get_scmp_info(r_no):
-    """嘗試抓取馬名 (SCMP)"""
-    try:
-        date_str = datetime.now(HKT).strftime("%Y%m%d")
-        url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
-        resp = requests.get(url, headers=HEADERS, timeout=8)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            text = soup.get_text()
-            # 簡單正則抓馬名
-            # 格式通常是: 1  ROMANTIC WARRIOR
-            info = {}
-            for line in text.split('\n'):
-                m = re.search(r'^(\d{1,2})\s+([A-Z\s\']{3,30})$', line.strip())
-                if m and m.group(2) not in ["HORSE", "JOCKEY"]:
-                    info[int(m.group(1))] = m.group(2).strip()
-            return info
-    except:
-        pass
-    return {}
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # 尋找主要的賽事表格
+        # SCMP 的結構通常是 div.racecard > table
+        tables = soup.find_all('table')
+        target_table = None
+        
+        # 尋找包含 'Horse' 或 '馬名' 的表格
+        for t in tables:
+            if 'Horse' in t.get_text() or 'Jockey' in t.get_text():
+                target_table = t
+                break
+        
+        if not target_table:
+            return pd.DataFrame(), "找不到賽事表格 (可能尚未公佈排位)", False
 
-# 3. 介面邏輯
-st.title("🏇 賽馬智腦 V1.39 (功能恢復版)")
+        # 解析表格列
+        rows = []
+        # 抓取標頭以確定欄位位置
+        headers = [th.get_text(strip=True).upper() for th in target_table.find_all('th')]
+        
+        # 遍歷每一行
+        for tr in target_table.find_all('tr')[1:]: # 跳過標頭
+            cols = tr.find_all('td')
+            if not cols: continue
+            
+            row_data = [td.get_text(strip=True) for td in cols]
+            
+            # 確保欄位數量足夠 (SCMP 表格結構可能會變，這裡做彈性處理)
+            if len(row_data) > 3:
+                # 嘗試提取關鍵資訊
+                # 通常第 1 欄是號碼，第 2 欄是馬名(含負重等資訊)
+                try:
+                    h_no = row_data[0]
+                    # 馬名處理：SCMP 有時會把馬名和負重放在一起，需清理
+                    full_name = row_data[1] 
+                    # 移除括號內的數字 (例如 "ROMANTIC WARRIOR (1)")
+                    h_name = full_name.split('(')[0].strip()
+                    
+                    # 嘗試抓取賠率 (Win Odds)
+                    # 賠率通常在最後幾欄，或者標頭為 "ODDS" / "WIN"
+                    odds = 0.0
+                    odds_str = "-"
+                    
+                    # 簡單啟發式：找看起來像賠率的數字 (含有小數點)
+                    for val in row_data[-3:]: # 檢查最後 3 欄
+                        if re.match(r'^\d+\.\d+$', val):
+                            odds = float(val)
+                            odds_str = val
+                            break
+                            
+                    rows.append({
+                        "馬號": h_no,
+                        "馬名": h_name,
+                        "騎師": row_data[2] if len(row_data) > 2 else "-",
+                        "練馬師": row_data[3] if len(row_data) > 3 else "-",
+                        "現價": odds,
+                        "顯示賠率": odds_str
+                    })
+                except:
+                    continue
+
+        if rows:
+            df = pd.DataFrame(rows)
+            # 判斷是否有真實賠率
+            has_real_odds = df["現價"].sum() > 0
+            
+            # 如果沒有賠率，生成一個「預測值」欄位讓介面不空白 (可選)
+            if not has_real_odds:
+                log += "注意：目前尚未有正式賠率 (顯示排位表)\n"
+            else:
+                log += f"成功獲取賠率數據: {len(df)} 筆\n"
+                
+            return df, log, has_real_odds
+        else:
+            return pd.DataFrame(), "解析表格後無數據", False
+
+    except Exception as e:
+        return pd.DataFrame(), f"解析錯誤: {str(e)}", False
+
+# ----------------- UI 介面 -----------------
+st.title("🏇 賽馬智腦 V1.40 (SCMP 直連版)")
+
+# 1. 自動日期偵測
+target_date, date_msg = get_next_race_date()
+st.info(f"📅 賽程鎖定: **{date_msg}**")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    race_no = st.selectbox("選擇場次", range(1, 15))
-    if st.button("🔄 立即更新數據", type="primary"):
-        with st.status("正在抓取數據...", expanded=True) as status:
-            # 步驟 1: 抓賠率
-            st.write("連線 HKJC...")
-            odds_data = get_hkjc_odds(race_no)
-            
-            # 步驟 2: 抓馬名
-            st.write("連線 SCMP (馬名)...")
-            name_data = get_scmp_info(race_no)
-            
-            # 整合
-            rows = []
-            for h_no, odds in odds_data.items():
-                name = name_data.get(h_no, f"馬匹 {h_no}")
-                rows.append({"馬號": h_no, "馬名": name, "現價": odds})
-            
-            if rows:
-                df = pd.DataFrame(rows)
-                # 計算簡單分數
-                df["得分"] = df["現價"].apply(lambda x: 50 if x<5 else (30 if x<10 else 10))
-                
-                # 計算走勢 (如果有舊數據)
-                old_key = f"race_{race_no}"
-                if old_key in st.session_state['race_data']:
-                    old_df = st.session_state['race_data'][old_key]
-                    merged = df.merge(old_df[['馬號', '現價']], on='馬號', suffixes=('', '_old'), how='left')
-                    df["走勢"] = ((merged['現價_old'] - merged['現價']) / merged['現價_old'] * 100).fillna(0).round(1)
-                else:
-                    df["走勢"] = 0.0
-                
-                st.session_state['race_data'][f"race_{race_no}"] = df
-                status.update(label="更新完成", state="complete")
-            else:
-                status.update(label="找不到數據 (可能今日無賽事)", state="error")
+    st.markdown("### 🎮 控制台")
+    race_no = st.selectbox("選擇場次", range(1, 15), index=0)
+    
+    update_btn = st.button("🔄 讀取數據", type="primary", use_container_width=True)
+    
+    st.divider()
+    st.caption("數據來源: South China Morning Post (SCMP)")
+    st.caption("本系統會自動抓取下一個賽馬日的排位表。")
 
+if update_btn:
+    with st.spinner("正在連線至 SCMP 資料庫..."):
+        df, log, has_odds = fetch_scmp_race_card(target_date, race_no)
+        st.session_state['curr_df'] = df
+        st.session_state['curr_log'] = log
+        st.session_state['has_odds'] = has_odds
+
+# 顯示區域
 with col2:
-    data_key = f"race_{race_no}"
-    if data_key in st.session_state['race_data']:
-        df = st.session_state['race_data'][data_key]
-        df = df.sort_values("現價") # 賠率低到高排序
+    if 'curr_df' in st.session_state and not st.session_state['curr_df'].empty:
+        df = st.session_state['curr_df']
+        has_odds = st.session_state.get('has_odds', False)
         
-        # 首選卡片
-        best = df.iloc[0]
-        st.markdown(f"""
-        <div style="padding:15px; border-radius:10px; background:#e3f2fd; border:2px solid #2196f3; margin-bottom:15px;">
-            <h3 style="margin:0; color:#0d47a1;">🔥 熱門首選：#{best['馬號']} {best['馬名']}</h3>
-            <p style="margin:5px 0 0 0; font-size:18px;"><b>{best['現價']}</b> (走勢: {best['走勢']}%)</p>
-        </div>
-        """, unsafe_allow_html=True)
+        # 標題
+        status_tag = "🟢 即時賠率" if has_odds else "🟡 排位表 (賠率未出)"
+        st.subheader(f"第 {race_no} 場 - {status_tag}")
         
-        # 表格
+        # 顯示卡片 (如果有賠率，顯示推薦)
+        if has_odds:
+            # 簡單分析：賠率越低分越高
+            df["分數"] = df["現價"].apply(lambda x: 100/x if x > 0 else 0)
+            best = df.sort_values("分數", ascending=False).iloc[0]
+            
+            st.markdown(f"""
+            <div style="background-color:#e8f5e9; padding:15px; border-radius:10px; border:1px solid #4caf50; margin-bottom:15px;">
+                <h4 style="margin:0; color:#2e7d32;">🔥 數據首選</h4>
+                <div style="font-size:24px; font-weight:bold; color:#1b5e20;">
+                    #{best['馬號']} {best['馬名']} <span style="font-size:16px; color:#666;">(賠率: {best['顯示賠率']})</span>
+                </div>
+                <div style="font-size:14px;">騎師: {best['騎師']} | 練馬師: {best['練馬師']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ 此場次尚未開出正式賠率，僅顯示排位資料。")
+            
+        # 顯示表格
         st.dataframe(
-            df, 
+            df[["馬號", "馬名", "騎師", "練馬師", "顯示賠率"]],
             column_config={
-                "現價": st.column_config.NumberColumn(format="%.1f"),
-                "走勢": st.column_config.NumberColumn(format="%.1f%%"),
-                "得分": st.column_config.ProgressColumn(min_value=0, max_value=60)
+                "馬號": st.column_config.TextColumn("No.", width="small"),
+                "顯示賠率": st.column_config.TextColumn("賠率 (Win)", help="若顯示 '-' 代表未開盤"),
             },
-            hide_index=True,
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
+        
+        with st.expander("查看系統日誌"):
+            st.text(st.session_state['curr_log'])
+            
+    elif 'curr_log' in st.session_state:
+        st.error("無法獲取數據，請查看日誌。")
+        st.text(st.session_state['curr_log'])
     else:
-        st.info("請點擊左側按鈕更新數據")
+        st.info("👈 請在左側點擊「讀取數據」開始")
