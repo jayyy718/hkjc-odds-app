@@ -9,8 +9,8 @@ import random
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.23 (智能表格評分) =====================
-APP_VERSION = "V1.23 (Smart Table Select)"
+# ===================== 版本 V1.24 (自適應提取) =====================
+APP_VERSION = "V1.24 (Adaptive Fetch)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
@@ -55,29 +55,26 @@ def fetch_scmp_data(r_no, t_date):
                 
                 best_df = None
                 best_score = -1
-                best_idx = -1
                 
-                # === 智能評分系統 ===
+                # === 寬鬆評分 ===
                 for i, df in enumerate(dfs):
                     cols = [str(c).lower() for c in df.columns]
                     score = 0
-                    
-                    # 關鍵字加分
                     if any("no" in c for c in cols): score += 2
                     if any("horse" in c for c in cols): score += 2
-                    if any("jockey" in c for c in cols): score += 3 # 騎師欄位通常代表是排位表
-                    if any("trainer" in c for c in cols): score += 3 # 練馬師同上
+                    if any("jockey" in c for c in cols): score += 3
+                    if any("trainer" in c for c in cols): score += 3
                     if any("odds" in c or "win" in c for c in cols): score += 1
                     
-                    logs.append(f"表格 {i+1} 分數: {score} (欄位: {cols[:5]}...)")
+                    logs.append(f"T{i+1}: {score}分 {cols[:3]}")
                     
                     if score > best_score:
                         best_score = score
                         best_df = df
-                        best_idx = i+1
                 
-                if best_df is not None and best_score >= 4: # 至少要包含馬名和另一項
-                    logs.append(f"-> 選中表格 {best_idx} (得分 {best_score})")
+                # 門檻降至 2 分 (只要有 Horse 就試)
+                if best_df is not None and best_score >= 2:
+                    logs.append(f"-> 嘗試解析最佳表格 (得分 {best_score})")
                     target_df = best_df
                     target_df.columns = [str(c).strip() for c in target_df.columns]
                     
@@ -91,6 +88,9 @@ def fetch_scmp_data(r_no, t_date):
                         elif "win" in cl or "odds" in cl: col_map["Odds"] = c
                     
                     res = []
+                    # 模擬行號作為備用馬號
+                    row_idx = 1
+                    
                     for _, row in target_df.iterrows():
                         try:
                             # 1. 提取馬號
@@ -100,11 +100,15 @@ def fetch_scmp_data(r_no, t_date):
                                 m = re.search(r'\d+', val)
                                 if m: h_no = int(m.group(0))
                             
-                            # 備用方案：如果沒有馬號欄位，嘗試從馬名提取 (例如 "1 Golden Sixty")
+                            # 備用 1: 從馬名提取 (1. Golden Sixty)
                             if h_no == 0 and "Horse" in col_map:
                                 val = str(row[col_map["Horse"]])
                                 m = re.match(r'^(\d+)', val.strip())
                                 if m: h_no = int(m.group(1))
+                            
+                            # 備用 2: 如果還是沒有，假設行號就是馬號 (通常 SCMP 排位表是按順序的)
+                            if h_no == 0:
+                                h_no = row_idx
 
                             # 2. 提取賠率
                             odds = 0.0
@@ -118,23 +122,24 @@ def fetch_scmp_data(r_no, t_date):
                             jock = row.get(col_map.get("Jockey"), "未知")
                             trn = row.get(col_map.get("Trainer"), "未知")
                             
-                            # 只要有馬號就加入
-                            if h_no > 0:
-                                res.append({
-                                    "馬號": h_no,
-                                    "馬名": str(name),
-                                    "騎師": str(jock),
-                                    "練馬師": str(trn),
-                                    "現價": odds
-                                })
+                            res.append({
+                                "馬號": h_no,
+                                "馬名": str(name),
+                                "騎師": str(jock),
+                                "練馬師": str(trn),
+                                "現價": odds
+                            })
+                            row_idx += 1
                         except: pass
                         
                     if res:
+                        # 過濾掉馬號大於 20 的 (通常是無效數據)
+                        res = [r for r in res if r["馬號"] <= 24]
                         return pd.DataFrame(res), "\n".join(logs)
                     else:
-                        logs.append("解析後無數據 (可能正則匹配失敗)")
+                        logs.append("解析後無數據")
                 else:
-                    logs.append("無適合的排位表 (分數過低)")
+                    logs.append("無適合表格")
                     
             except Exception as e:
                 logs.append(f"Pandas 解析錯誤: {str(e)}")
@@ -146,7 +151,7 @@ def fetch_scmp_data(r_no, t_date):
         
     return None, "\n".join(logs)
 def fetch_hkjc_fallback(r_no):
-    """HKJC 暴力搜索 Fallback"""
+    """HKJC Fallback"""
     url = "https://bet.hkjc.com/racing/jsonData.aspx"
     logs = []
     
@@ -162,13 +167,11 @@ def fetch_hkjc_fallback(r_no):
             text = resp.text
             res = []
             
-            # 模式 A: 1=9.9
             matches = re.findall(r'\b(\d+)=([\d\.]+)', text)
             for m in matches:
                 res.append({"馬號": int(m[0]), "現價": float(m[1])})
                 
             if not res:
-                # 模式 B: "1":"9.9"
                 matches = re.findall(r'"(\d+)":"([\d\.]+)"', text)
                 for m in matches:
                     res.append({"馬號": int(m[0]), "現價": float(m[1])})
@@ -186,15 +189,12 @@ def fetch_hkjc_fallback(r_no):
 
 def fetch_data(r_no, t_date):
     full_log = "=== 開始更新 ===\n"
-    
-    # 1. SCMP (智能評分)
     df, log = fetch_scmp_data(r_no, t_date)
     full_log += log + "\n"
     
     if df is not None and not df.empty:
         return df, full_log
     
-    # 2. HKJC Fallback
     full_log += "--- 嘗試 HKJC Fallback ---\n"
     df_jc, log_jc = fetch_hkjc_fallback(r_no)
     full_log += log_jc + "\n"
@@ -327,7 +327,7 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 智能抓取 (SCMP/JC)", type="primary", use_container_width=True):
+        if st.button("🔄 更新 (自適應版)", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
                 log = "Demo"
@@ -348,15 +348,15 @@ if app_mode == "📡 實時":
                 
                 curr["current_df"] = df_new
                 curr["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
-                st.success("更新成功")
+                st.success("成功")
                 time.sleep(0.5)
                 st.rerun()
             else:
-                st.error("所有來源皆失敗")
+                st.error("失敗")
     
     with c2: 
         st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-        with st.expander("📝 智能日誌 (Smart Log)", expanded=True):
+        with st.expander("📝 執行日誌", expanded=True):
             st.code(curr["debug_info"])
 
     with st.expander("🛠️ 排位資料"):
