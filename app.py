@@ -1,189 +1,294 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import re
+import os
 
-# ===================== V1.60 (Admin/User Mode) =====================
-# 核心理念：完全不連網，依賴管理員手動貼上資料
-# 1. 貼上排位表 (來自賽馬天地或其他網站)
-# 2. 貼上賠率表 (來自馬會官網)
-# 3. 系統自動合併並展示
+# ===================== V1.63 (Big Data AI Edition) =====================
+# 1. 整合 2024-2025 賽季原始數據 (CSV)
+# 2. 計算真實騎練勝率與檔位優勢
+# 3. 智能中英對照映射
 
-st.set_page_config(page_title="賽馬智腦 V1.60", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.63", layout="wide")
 
-# 初始化 Session State (模擬資料庫)
-if 'race_data' not in st.session_state:
-    st.session_state['race_data'] = None
-if 'last_update' not in st.session_state:
-    st.session_state['last_update'] = None
+# --- 設定：中英翻譯字典 (將中文輸入映射到英文 CSV 數據) ---
+# 這是連接「用戶貼上的中文」與「CSV 裡的英文」的橋樑
+NAME_MAPPING = {
+    # 騎師
+    "潘頓": "Z Purton", "布文": "H Bowman", "麥道朗": "J McDonald", 
+    "田泰安": "K Teetan", "何澤堯": "C Y Ho", "艾道拿": "B Avdulla",
+    "鍾易禮": "Y L Chung", "希威森": "L Hewitson", "梁家俊": "K C Leung",
+    "班德禮": "H Bentley", "霍宏聲": "L Ferraris", "蔡明紹": "M Chadwick",
+    "周俊樂": "C L Chau", "艾兆禮": "A Atzeni", "楊明綸": "M L Yeung",
+    "巴度": "A Badel", "賀銘年": "A Hamelin", "潘明輝": "M F Poon",
+    "巫顯東": "H T Mo", "黃智弘": "E C W Wong", "莫雷拉": "J Moreira",
+    
+    # 練馬師
+    "伍鵬志": "P C Ng", "呂健威": "K W Lui", "姚本輝": "P F Yiu",
+    "蔡約翰": "J Size", "沈集成": "C S Shum", "告東尼": "A S Cruz",
+    "大衛希斯": "D A Hayes", "希斯": "D A Hayes", "方嘉柏": "C Fownes",
+    "羅富全": "F C Lor", "賀賢": "D J Hall", "韋達": "D J Whyte",
+    "黎昭昇": "J Richards", "廖康銘": "M Newnham", "蘇偉賢": "W Y So",
+    "葉楚航": "C H Yip", "鄭俊偉": "C W Chang", "徐雨石": "Y S Tsui",
+    "文家良": "K L Man", "巫偉傑": "W K Mo", "容天鵬": "T P Yung"
+}
 
-# ----------------- 解析邏輯 -----------------
-
-def parse_card_text(text):
+# --- 核心：數據庫載入與分析 ---
+@st.cache_data
+def load_and_analyze_data():
     """
-    解析排位表文字
-    假設格式大致為： 1 浪漫勇士 6 135 潘頓 沈集成
-    (馬號 馬名 檔位 負磅 騎師 練馬師)
+    讀取 CSV 並計算騎師、練馬師的勝率統計數據
     """
+    stats = {
+        "jockey_win_rate": {},
+        "trainer_win_rate": {},
+        "draw_stats": {},
+        "data_loaded": False
+    }
+    
+    file_path = "20242025HongKongHorseRacingRawData.csv"
+    
+    if os.path.exists(file_path):
+        try:
+            df = pd.read_csv(file_path)
+            
+            # 清理排名數據 (將 '1 DH', '1' 轉為 1)
+            def clean_pla(x):
+                try:
+                    return int(re.sub(r'\D', '', str(x)))
+                except:
+                    return 99
+            
+            df['Rank'] = df['Pla.'].apply(clean_pla)
+            
+            # 1. 計算騎師勝率
+            # 只看前 4 名的表現來給分
+            jockey_groups = df.groupby('Jockey')['Rank']
+            for name, ranks in jockey_groups:
+                total = len(ranks)
+                wins = sum(ranks == 1)
+                places = sum(ranks <= 3)
+                if total > 5: # 至少跑過 5 場才統計
+                    stats["jockey_win_rate"][name] = (wins / total) * 100
+            
+            # 2. 計算練馬師勝率
+            trainer_groups = df.groupby('Trainer')['Rank']
+            for name, ranks in trainer_groups:
+                total = len(ranks)
+                wins = sum(ranks == 1)
+                if total > 5:
+                    stats["trainer_win_rate"][name] = (wins / total) * 100
+            
+            stats["data_loaded"] = True
+            stats["total_races"] = len(df)
+            
+        except Exception as e:
+            st.error(f"數據載入錯誤: {e}")
+    else:
+        # 如果找不到檔案，不報錯，只是標記未載入
+        pass
+        
+    return stats
+
+# 初始化數據庫
+DB_STATS = load_and_analyze_data()
+
+# --- AI 計算引擎 (結合歷史數據) ---
+def calculate_ai_score_v2(row, db_stats):
+    score = 0
+    details = []
+    
+    # 1. 賠率權重 (市場信心) - 基礎分 0-60 分
+    try:
+        odds = float(row['獨贏'])
+        if odds > 0:
+            # 賠率越低分越高: 2.0賠率 -> 50%機率 -> 30分
+            implied_prob = (1 / odds) * 100
+            odds_score = implied_prob * 0.6
+            score += odds_score
+    except:
+        pass
+        
+    # 如果有歷史數據庫，使用真實數據加成
+    if db_stats["data_loaded"]:
+        
+        # 2. 騎師數據 (中英對照)
+        jockey_zh = str(row.get('騎師', '')).strip()
+        jockey_en = NAME_MAPPING.get(jockey_zh, "")
+        
+        # 嘗試模糊匹配 (如果字典沒找到)
+        if not jockey_en:
+            # 簡單處理：如果是英文輸入就直接用
+            if re.search(r'[a-zA-Z]', jockey_zh): jockey_en = jockey_zh
+        
+        if jockey_en in db_stats["jockey_win_rate"]:
+            win_rate = db_stats["jockey_win_rate"][jockey_en]
+            # 勝率加成：每 1% 勝率 + 0.5 分
+            # 例如潘頓勝率 20% -> +10 分
+            j_score = win_rate * 0.5
+            score += j_score
+            details.append(f"騎師{int(win_rate)}%")
+        
+        # 3. 練馬師數據
+        trainer_zh = str(row.get('練馬師', '')).strip()
+        trainer_en = NAME_MAPPING.get(trainer_zh, "")
+        
+        if trainer_en in db_stats["trainer_win_rate"]:
+            t_win_rate = db_stats["trainer_win_rate"][trainer_en]
+            t_score = t_win_rate * 0.5
+            score += t_score
+            details.append(f"練馬師{int(t_win_rate)}%")
+            
+    else:
+        # 降級模式：如果沒有 CSV，使用簡單規則
+        if "潘頓" in str(row.get('騎師', '')): score += 5
+    
+    # 4. 檔位優勢 (通用規則)
+    try:
+        draw = int(row['檔位'])
+        if draw <= 3: score += 4
+        elif draw >= 11: score -= 2
+    except: pass
+    
+    return score
+
+# --- 排位與賠率解析 (V1.61) ---
+def parse_strict_card(text):
     data = []
     lines = text.strip().split('\n')
-    
     for line in lines:
         line = line.strip()
-        if not line: continue
-        
-        # 嘗試抓取關鍵欄位
-        # 尋找開頭是數字 (馬號)
-        # 然後尋找中文 (馬名, 騎師, 練馬師)
-        # 尋找其他數字 (檔位, 負磅)
-        
+        if not line or "馬號" in line: continue
+        parts = line.split()
+        if len(parts) < 7 or not parts[0].isdigit(): continue
         try:
-            parts = line.split()
-            if not parts[0].isdigit(): continue
-            
-            h_no = int(parts[0])
-            
-            # 簡單啟發式分析 (Heuristic Analysis)
-            # 這需要根據您複製的網站格式稍作調整，這裡是用最通用的邏輯
-            # 假設第二個非數字塊是馬名
-            
-            row = {'馬號': h_no, '原始資料': line}
-            
-            # 嘗試提取馬名 (純中文)
-            chinese_parts = [p for p in parts if re.search(r'[\u4e00-\u9fa5]', p)]
-            if len(chinese_parts) >= 1: row['馬名'] = chinese_parts[0]
-            if len(chinese_parts) >= 2: row['騎師'] = chinese_parts[1]
-            if len(chinese_parts) >= 3: row['練馬師'] = chinese_parts[2]
-            
-            # 嘗試提取檔位和負磅 (除了馬號以外的數字)
-            num_parts = [p for p in parts if p.isdigit() and int(p) != h_no]
-            # 簡單判斷：小的通常是檔位(1-14)，大的通常是負磅(100-135)
-            for n in num_parts:
-                val = int(n)
-                if 1 <= val <= 14 and '檔位' not in row: row['檔位'] = val
-                elif 100 <= val <= 135 and '負磅' not in row: row['負磅'] = val
-            
+            row = {
+                '馬號': int(parts[0]),
+                '馬名': parts[1],
+                '負磅': parts[2],
+                '騎師': parts[4],
+                '檔位': int(parts[5]),
+                '練馬師': parts[6],
+                '評分': parts[8] if len(parts) > 8 else "-"
+            }
             data.append(row)
-        except:
-            continue
-            
+        except: continue
     return pd.DataFrame(data)
 
-def parse_odds_text(text):
-    """
-    解析賠率文字
-    格式： 1 2.5
-    """
+def parse_odds_universal(text):
     odds_map = {}
     lines = text.strip().split('\n')
-    
     for line in lines:
-        # 尋找行內的 [數字] ... [小數點數字]
-        # Regex: 開頭數字(Group 1) ... 小數點數字(Group 2)
-        match = re.search(r'^(\d+)\s+.*?(\d+\.\d+)', line)
-        if not match:
-            # 嘗試更寬鬆的匹配: 只要有數字和小數點
-            nums = re.findall(r'\d+\.\d+|\d+', line)
-            if len(nums) >= 2:
-                try:
-                    h_no = int(nums[0])
-                    # 倒著找第一個有小數點的
-                    h_win = None
-                    for n in reversed(nums):
-                        if '.' in n: 
-                            h_win = float(n)
-                            break
-                    if h_no and h_win: odds_map[h_no] = h_win
-                except: pass
-        else:
+        nums = re.findall(r'\d+\.\d+|\d+', line)
+        if len(nums) >= 2:
             try:
-                odds_map[int(match.group(1))] = float(match.group(2))
+                h_no = int(nums[0])
+                h_win = None
+                for n in reversed(nums):
+                    if '.' in n: 
+                        h_win = float(n)
+                        break
+                if h_win and 1 <= h_no <= 14: odds_map[h_no] = h_win
             except: pass
-            
     return odds_map
 
-# ----------------- 側邊欄：身份切換 -----------------
-mode = st.sidebar.radio("身份選擇", ["👨‍💻 一般用戶 (查看)", "🔧 管理員 (輸入資料)"])
+# --- Session State 初始化 ---
+if 'race_data' not in st.session_state: st.session_state['race_data'] = None
+if 'last_update' not in st.session_state: st.session_state['last_update'] = None
+if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'] = False
 
-# ----------------- 頁面邏輯 -----------------
+# ===================== 介面邏輯 =====================
 
-if mode == "🔧 管理員 (輸入資料)":
-    st.title("🔧 後台管理系統")
-    st.write("請在此輸入資料，點擊發布後，一般用戶即可看到分析結果。")
+st.sidebar.title("🏇 賽馬智腦 V1.63")
+page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
+
+if page == "🔒 後台管理":
+    st.header("🔒 管理員")
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.info("步驟 1：貼上排位表 (來自賽馬天地/HKJC)")
-        card_text = st.text_area("排位文字", height=300, placeholder="1 浪漫勇士 1 126 麥道朗 沈集成\n2 金鎗六十 2 126 何澤堯 呂健威\n...")
-        
-    with col2:
-        st.info("步驟 2：貼上賠率 (來自馬會/頭條)")
-        odds_text = st.text_area("賠率文字", height=300, placeholder="1 2.3\n2 5.6\n...")
-        
-    if st.button("🚀 發布/更新資料", type="primary"):
-        if not card_text:
-            st.error("請至少貼上排位表！")
-        else:
-            # 1. 解析排位
-            df_card = parse_card_text(card_text)
-            
-            # 2. 解析賠率 (如果有)
-            if odds_text:
-                odds_map = parse_odds_text(odds_text)
-                df_card['獨贏'] = df_card['馬號'].map(odds_map).fillna("-")
+    if not st.session_state['admin_logged_in']:
+        pwd = st.text_input("密碼", type="password")
+        if st.button("登入"):
+            if pwd == "jay123":
+                st.session_state['admin_logged_in'] = True
+                st.rerun()
             else:
-                df_card['獨贏'] = "未輸入"
-                
-            # 3. 儲存到全局變數
-            st.session_state['race_data'] = df_card
-            st.session_state['last_update'] = pd.Timestamp.now().strftime("%H:%M:%S")
-            st.success(f"已成功發布 {len(df_card)} 匹馬的資料！請切換至「一般用戶」查看效果。")
+                st.error("密碼錯誤")
+    else:
+        # 資料庫狀態
+        if DB_STATS["data_loaded"]:
+            st.success(f"📚 歷史數據庫已連線 (包含 {DB_STATS['total_races']} 場賽事記錄)")
+        else:
+            st.warning("⚠️ 未偵測到 CSV 數據檔，系統將使用簡易模式運行。")
 
-else: # 一般用戶模式
-    st.title("🏇 賽馬智腦 V1.60 (公開版)")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.info("1. 排位表")
+            card_text = st.text_area("格式: 馬號 馬名 負磅 +/- 騎師 檔位...", height=300)
+        with c2:
+            st.info("2. 即時賠率")
+            odds_text = st.text_area("格式: 馬號 賠率", height=300)
+            
+        if st.button("🚀 計算並發布", type="primary"):
+            df = parse_strict_card(card_text)
+            if not df.empty:
+                if odds_text:
+                    odds_map = parse_odds_universal(odds_text)
+                    df['獨贏'] = df['馬號'].map(odds_map).fillna("-")
+                else:
+                    df['獨贏'] = "-"
+                
+                # 計算 AI 分數
+                scores = []
+                for _, row in df.iterrows():
+                    scores.append(calculate_ai_score_v2(row, DB_STATS))
+                
+                df['AI分數'] = scores
+                # 正規化勝率
+                total_score = sum(scores)
+                if total_score > 0:
+                    df['勝率%'] = (df['AI分數'] / total_score * 100).round(1)
+                else:
+                    df['勝率%'] = 0.0
+                
+                st.session_state['race_data'] = df
+                st.session_state['last_update'] = pd.Timestamp.now().strftime("%H:%M:%S")
+                st.success(f"發布成功！")
+            else:
+                st.error("解析失敗")
+
+else:
+    st.title("📊 賽馬智腦分析看板")
     
     if st.session_state['race_data'] is None:
-        st.warning("⏳ 管理員尚未發布本場賽事資料，請稍後再試。")
-        st.info("提示：請先切換到左側 sidebar 的「管理員」模式輸入資料。")
+        st.info("等待資料發布...")
     else:
         df = st.session_state['race_data'].copy()
-        update_time = st.session_state['last_update']
         
-        st.caption(f"最後更新時間: {update_time}")
+        # 顯示大數據加成標籤
+        if DB_STATS["data_loaded"]:
+            st.caption("✅ AI 已啟用大數據引擎：結合 2024/25 賽季真實騎練勝率計算")
         
-        # 智能分析：如果有賠率，算出大熱門
-        try:
-            valid_odds = df[pd.to_numeric(df['獨贏'], errors='coerce').notnull()].copy()
-            if not valid_odds.empty:
-                valid_odds['v'] = valid_odds['獨贏'].astype(float)
-                valid_odds = valid_odds.sort_values('v')
-                
-                # Top 3
-                top3 = valid_odds.head(3)
-                
-                c1, c2, c3 = st.columns(3)
-                if len(top3) > 0:
-                    c1.metric("🥇 第一熱門", f"#{top3.iloc[0]['馬號']} {top3.iloc[0].get('馬名', '')}", f"{top3.iloc[0]['獨贏']}")
-                if len(top3) > 1:
-                    c2.metric("🥈 第二熱門", f"#{top3.iloc[1]['馬號']} {top3.iloc[1].get('馬名', '')}", f"{top3.iloc[1]['獨贏']}")
-                if len(top3) > 2:
-                    c3.metric("🥉 第三熱門", f"#{top3.iloc[2]['馬號']} {top3.iloc[2].get('馬名', '')}", f"{top3.iloc[2]['獨贏']}")
-                
-                st.markdown("---")
-        except: pass
+        # 排序
+        df = df.sort_values('勝率%', ascending=False).reset_index(drop=True)
         
-        # 顯示主表格
-        # 整理欄位順序
-        preferred_cols = ['馬號', '馬名', '獨贏', '騎師', '練馬師', '檔位', '負磅']
-        # 只顯示存在的欄位
-        final_cols = [c for c in preferred_cols if c in df.columns]
+        # 卡片視圖
+        top4 = df.head(4)
+        cols = st.columns(4)
+        for i, col in enumerate(cols):
+            if i < len(top4):
+                h = top4.iloc[i]
+                col.metric(
+                    label=f"No.{h['馬號']} {h['馬名']}",
+                    value=f"{h['勝率%']}%",
+                    delta=f"賠率: {h['獨贏']}"
+                )
         
-        # 美化表格顯示
+        st.divider()
         st.dataframe(
-            df[final_cols],
+            df[['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位']],
             column_config={
-                "獨贏": st.column_config.TextColumn("獨贏賠率", help="即時獨贏賠率"),
-                "馬號": st.column_config.NumberColumn("No.", format="%d"),
+                "勝率%": st.column_config.ProgressColumn("AI 預測勝率", format="%.1f%%", min_value=0, max_value=100),
+                "獨贏": st.column_config.TextColumn("賠率"),
             },
             use_container_width=True,
             hide_index=True
