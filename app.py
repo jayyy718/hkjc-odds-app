@@ -9,31 +9,18 @@ import random
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.14 =====================
-APP_VERSION = "V1.14"
+# ===================== 版本 V1.15 (診斷模式) =====================
+APP_VERSION = "V1.15 (Debug)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 兩組 Headers：桌面版 與 手機版
-HEADERS_DESKTOP = {
+# 使用更簡單的 Headers，有時候太複雜反而被擋
+HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
-    "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en",
-    "Connection": "keep-alive"
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en"
 }
-
-HEADERS_MOBILE = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-    "Accept": "*/*",
-    "Referer": "https://m.hkjc.com/"
-}
-
-@st.cache_resource
-def get_regex():
-    return (re.compile(r'^\d+$'), re.compile(r'\d+\.?\d*'), re.compile(r'[\u4e00-\u9fa5]+'))
-
-REGEX_INT, REGEX_FLOAT, REGEX_CHN = get_regex()
 
 @st.cache_resource
 def get_storage():
@@ -43,7 +30,8 @@ def get_storage():
             "current_df": pd.DataFrame(),
             "last_df": pd.DataFrame(),
             "last_update": "無數據",
-            "raw_info_text": ""
+            "raw_info_text": "",
+            "debug_info": ""  # 新增 Debug 欄位
         }
     return data
 
@@ -52,95 +40,85 @@ race_storage = get_storage()
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-def get_json_odds(session, r_no, d_str, ven):
-    # 策略 1: 標準 JSON API
-    url = "https://bet.hkjc.com/racing/getJSON.aspx"
-    params = {"type": "winodds", "date": d_str, "venue": ven, "start": r_no, "end": r_no}
-    try:
-        # 隨機延遲，模擬真人
-        time.sleep(random.uniform(0.1, 0.3))
-        resp = session.get(url, params=params, headers=HEADERS_DESKTOP, timeout=6)
-        
-        if resp.status_code == 200 and "OUT" in resp.text:
-            data = resp.json()
-            raw = data.get("OUT")
-            if raw:
-                res = []
-                for p in raw.split(";"):
-                    if "=" in p:
-                        k, v = p.split("=")
-                        if k.isdigit():
-                            try:
-                                val = float(v)
-                                if val < 900: res.append({"馬號": int(k), "現價": val})
-                            except: pass
-                if res: return res
-    except: pass
-    return None
-
-def get_html_odds(session, r_no, d_str, ven):
-    # 策略 2: 爬取網頁 HTML (桌面版)
-    url = "https://bet.hkjc.com/racing/pages/odds_wp.aspx"
-    params = {"date": d_str, "venue": ven, "raceno": r_no, "lang": "en"}
-    try:
-        time.sleep(random.uniform(0.1, 0.3))
-        resp = session.get(url, params=params, headers=HEADERS_DESKTOP, timeout=8)
-        
-        if resp.status_code == 200:
-            res = []
-            # 增強型 Regex: 抓取 id="win_odds_1" 或類似結構
-            pat = r'(?:id="win_odds_|o=")(\d+)"[^>]*>([\d\.]+)<'
-            matches = re.findall(pat, resp.text)
-            
-            # 如果上面抓不到，試試看抓 JS 變數
-            if not matches:
-                pat_js = r'winodds\s*=\s*"([^"]+)"'
-                m_js = re.search(pat_js, resp.text)
-                if m_js:
-                    raw = m_js.group(1)
-                    for p in raw.split(";"):
-                        if "=" in p:
-                            k, v = p.split("=")
-                            if k.isdigit():
-                                matches.append((k, v))
-
-            if matches:
-                for m in matches:
-                    try:
-                        h = int(m[0])
-                        v = float(m[1])
-                        if v < 900: res.append({"馬號": h, "現價": v})
-                    except: pass
-                if res: return res
-    except: pass
-    return None
-
-def fetch_data(r_no, t_date):
+def fetch_data_debug(r_no, t_date):
     d_str = t_date.strftime("%Y-%m-%d")
     s = requests.Session()
+    s.headers.update(HEADERS)
     
-    # 1. 訪問首頁種 Cookie (非常重要)
-    try: 
-        s.get("https://bet.hkjc.com/index.aspx?lang=en", headers=HEADERS_DESKTOP, timeout=5)
-    except: pass
+    debug_log = []
     
-    err = ""
-    # 輪詢場地
-    for v in ["ST", "HV"]:
-        # 先試 JSON
-        d = get_json_odds(s, r_no, d_str, v)
-        # 失敗則試 HTML
-        if not d:
-            d = get_html_odds(s, r_no, d_str, v)
+    # 1. 嘗試訪問首頁
+    try:
+        r0 = s.get("https://bet.hkjc.com/index.aspx", timeout=5)
+        debug_log.append(f"首頁狀態: {r0.status_code}")
+    except Exception as e:
+        debug_log.append(f"首頁連線失敗: {str(e)}")
+
+    target_venues = ["ST", "HV"]
+    final_df = None
+    
+    for v in target_venues:
+        debug_log.append(f"--- 嘗試場地: {v} ---")
         
-        if d:
-            df = pd.DataFrame(d)
-            df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
-            return df, None
-        else:
-            err = f"API 無回應 (日期: {d_str}, 場地: {v})"
-            
-    return None, err
+        # 2. 嘗試 JSON API
+        url_json = "https://bet.hkjc.com/racing/getJSON.aspx"
+        p_json = {"type": "winodds", "date": d_str, "venue": v, "start": r_no, "end": r_no}
+        
+        try:
+            r1 = s.get(url_json, params=p_json, timeout=5)
+            debug_log.append(f"JSON API 狀態: {r1.status_code}")
+            if r1.status_code == 200:
+                if "OUT" in r1.text:
+                    data = r1.json()
+                    raw = data.get("OUT")
+                    if raw:
+                        res = []
+                        for part in raw.split(";"):
+                            if "=" in part:
+                                k, val = part.split("=")
+                                if k.isdigit():
+                                    res.append({"馬號": int(k), "現價": float(val)})
+                        if res:
+                            final_df = pd.DataFrame(res)
+                            break
+                else:
+                    debug_log.append(f"JSON 回傳前 100 字: {r1.text[:100]}")
+        except Exception as e:
+            debug_log.append(f"JSON 錯誤: {str(e)}")
+
+        # 3. 嘗試 HTML 爬蟲
+        if final_df is None:
+            url_html = "https://bet.hkjc.com/racing/pages/odds_wp.aspx"
+            p_html = {"date": d_str, "venue": v, "raceno": r_no, "lang": "en"}
+            try:
+                r2 = s.get(url_html, params=p_html, timeout=8)
+                debug_log.append(f"HTML 頁面狀態: {r2.status_code}")
+                if r2.status_code == 200:
+                    # 嘗試抓 title 看看是否進入了正確頁面
+                    title_m = re.search(r'<title>(.*?)</title>', r2.text)
+                    if title_m:
+                        debug_log.append(f"頁面標題: {title_m.group(1)}")
+                    else:
+                        debug_log.append("找不到標題 (可能被擋)")
+                        
+                    # 嘗試抓賠率
+                    matches = re.findall(r'id="win_odds_(\d+)"[^>]*>([\d\.]+)<', r2.text)
+                    if matches:
+                        res = []
+                        for m in matches:
+                            res.append({"馬號": int(m[0]), "現價": float(m[1])})
+                        final_df = pd.DataFrame(res)
+                        break
+                    else:
+                        debug_log.append(f"Regex 匹配失敗。HTML 前 200 字: {r2.text[:200]}")
+            except Exception as e:
+                debug_log.append(f"HTML 錯誤: {str(e)}")
+    
+    if final_df is not None:
+        final_df["馬名"] = final_df["馬號"].apply(lambda x: f"馬匹 {x}")
+        return final_df, "\n".join(debug_log)
+    
+    return None, "\n".join(debug_log)
 def gen_demo():
     rows = []
     for i in range(1, 13):
@@ -152,13 +130,11 @@ def get_score(row):
     o = row.get("現價", 0)
     if o > 0 and o <= 5.0: s += 25
     elif o > 5.0 and o <= 10.0: s += 10
-    
     tr = row.get("走勢", 0)
     if tr >= 15: s += 50
     elif tr >= 10: s += 35
     elif tr >= 5: s += 20
     elif tr <= -10: s -= 20
-    
     j = str(row.get("騎師", ""))
     t = str(row.get("練馬師", ""))
     for k, v in JOCKEY_RANK.items():
@@ -181,7 +157,8 @@ def parse_info(txt):
         if len(parts) >= 2 and parts[0].isdigit():
             try:
                 no = int(parts[0])
-                chn = [p for p in parts if REGEX_CHN.match(p)]
+                # 簡單的正則匹配中文
+                chn = [p for p in parts if re.match(r'[\u4e00-\u9fa5]+', p)]
                 j = chn[1] if len(chn) > 1 else "未知"
                 t = chn[2] if len(chn) > 2 else "未知"
                 rows.append({"馬號": no, "騎師": j, "練馬師": t})
@@ -250,10 +227,7 @@ with st.sidebar:
     
     if app_mode == "📡 實時":
         st.divider()
-        # [修復] 日期選擇器預設為明天 (因為通常是為了預覽)
-        # 或者讓用戶自己選
         sel_date = st.date_input("日期", value=datetime.now(HKT).date())
-        
         sel_race = st.radio("場次", list(range(1, 15)), format_func=lambda x: f"賽事 {x}", horizontal=True)
         st_autorefresh(interval=30000, key="auto_refresh")
         st.divider()
@@ -271,10 +245,13 @@ if app_mode == "📡 實時":
         if st.button("🔄 更新賠率", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
-                err = None
+                log = "Demo Mode"
                 time.sleep(0.5)
             else:
-                df_new, err = fetch_data(sel_race, sel_date)
+                df_new, log = fetch_data_debug(sel_race, sel_date)
+            
+            # 無論成功失敗，都記錄 Log
+            curr["debug_info"] = log
             
             if df_new is not None:
                 if not curr["current_df"].empty:
@@ -293,9 +270,12 @@ if app_mode == "📡 實時":
                 time.sleep(0.5)
                 st.rerun()
             else:
-                st.error(f"失敗：{err}")
+                st.error("更新失敗，請查看右側詳細日誌")
     
-    with c2: st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
+    with c2: 
+        st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
+        with st.expander("📝 診斷日誌 (Debug Log)", expanded=True):
+            st.code(curr["debug_info"])
 
     with st.expander("🛠️ 排位資料"):
         txt_input = st.text_area("貼上排位表", value=curr["raw_info_text"], height=100)
