@@ -3,161 +3,128 @@ import pandas as pd
 import re
 import requests
 import time
-import random
-import os
-import json
 from datetime import datetime, timedelta, timezone
+from bs4 import BeautifulSoup
 
-# ----------------- 設定區 -----------------
-APP_VERSION = "V1.38 (Fix)"
-HISTORY_FILE = "race_history.json"
+# ===================== V1.39 進階修復版 =====================
+st.set_page_config(page_title="賽馬智腦 Pro", layout="wide")
+
+# 1. 基礎設定
 HKT = timezone(timedelta(hours=8))
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+RACE_STORAGE = {}
 
-# ----------------- 快取與資料 -----------------
-@st.cache_resource
-def get_storage():
-    data = {}
-    for i in range(1, 15):
-        data[i] = {"current_df": pd.DataFrame(), "last_update": "無數據", "debug_info": ""}
-    return data
+if 'race_data' not in st.session_state:
+    st.session_state['race_data'] = {}
 
-race_storage = get_storage()
-
-JOCKEY_DB = ['Purton', 'McDonald', 'Bowman', 'Teetan', 'Ho', 'Ferraris', 'Bentley']
-TRAINER_DB = ['Size', 'Lui', 'Ng', 'Lor', 'Shum', 'Yiu', 'Cruz', 'Fownes']
-
-def get_score(row):
-    """計算馬匹得分"""
-    s = 0
-    price = row.get("現價", 0)
-    
-    # 賠率分數
-    if price > 0 and price <= 5.0:
-        s += 25
-    elif price > 5.0 and price <= 10.0:
-        s += 10
-        
-    # 走勢分數
-    trend = row.get("走勢", 0)
-    if trend >= 15:
-        s += 50
-    elif trend >= 10:
-        s += 35
-    elif trend >= 5:
-        s += 20
-        
-    return round(s, 1)
-
-def fetch_data_simple(r_no):
-    """簡化版數據抓取 (僅抓取 HKJC JSON)"""
-    log = f"正在抓取第 {r_no} 場...\n"
-    data_list = []
-    
+# 2. 核心函數 (保持扁平)
+def get_hkjc_odds(r_no):
+    """抓取 HKJC 賠率"""
     try:
         url = "https://bet.hkjc.com/racing/jsonData.aspx"
-        # 參數設置
         params = {
             "type": "winodds", 
             "date": datetime.now(HKT).strftime("%Y-%m-%d"), 
             "venue": "HV", 
-            "start": r_no, 
-            "end": r_no
+            "start": r_no, "end": r_no
         }
-        
         resp = requests.get(url, params=params, headers=HEADERS, timeout=5)
-        
+        # 解析兩種常見格式
+        matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
+        if not matches:
+            matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
+        return {int(m[0]): float(m[1]) for m in matches}
+    except:
+        return {}
+
+def get_scmp_info(r_no):
+    """嘗試抓取馬名 (SCMP)"""
+    try:
+        date_str = datetime.now(HKT).strftime("%Y%m%d")
+        url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
+        resp = requests.get(url, headers=HEADERS, timeout=8)
         if resp.status_code == 200:
-            # 嘗試解析 JSON 格式的回傳
-            # 格式通常是: "1"="2.5";"2"="10.0";...
-            matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', resp.text)
-            
-            # 如果找不到，嘗試另一種格式 "1":"2.5"
-            if not matches:
-                matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', resp.text)
-            
-            for m in matches:
-                horse_no = int(m[0])
-                odds = float(m[1])
-                data_list.append({
-                    "馬號": horse_no,
-                    "馬名": f"馬匹 {horse_no}", # 暫時用假名，確保不報錯
-                    "現價": odds,
-                    "騎師": "-",
-                    "練馬師": "-"
-                })
-            
-            log += f"成功獲取 {len(data_list)} 筆賠率數據"
-        else:
-            log += f"HTTP 錯誤: {resp.status_code}"
-            
-    except Exception as e:
-        log += f"錯誤: {str(e)}"
-        
-    return pd.DataFrame(data_list), log
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            text = soup.get_text()
+            # 簡單正則抓馬名
+            # 格式通常是: 1  ROMANTIC WARRIOR
+            info = {}
+            for line in text.split('\n'):
+                m = re.search(r'^(\d{1,2})\s+([A-Z\s\']{3,30})$', line.strip())
+                if m and m.group(2) not in ["HORSE", "JOCKEY"]:
+                    info[int(m.group(1))] = m.group(2).strip()
+            return info
+    except:
+        pass
+    return {}
 
-# ----------------- UI 介面 -----------------
-st.set_page_config(page_title="賽馬智腦Lite", layout="wide")
+# 3. 介面邏輯
+st.title("🏇 賽馬智腦 V1.39 (功能恢復版)")
 
-st.title(f"🐎 賽馬智腦 {APP_VERSION}")
-
-col1, col2 = st.columns([1, 3])
+col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.markdown("### 控制台")
-    sel_race = st.number_input("選擇場次", min_value=1, max_value=14, value=1)
-    
-    if st.button("🔄 更新數據", type="primary", use_container_width=True):
-        df_new, log = fetch_data_simple(sel_race)
-        
-        # 儲存數據
-        curr = race_storage[sel_race]
-        curr["debug_info"] = log
-        
-        if not df_new.empty:
-            # 計算走勢
-            if not curr["current_df"].empty:
-                last_df = curr["current_df"][["馬號", "現價"]].rename(columns={"現價": "上回"})
-                df_new = df_new.merge(last_df, on="馬號", how="left")
-                df_new["上回"] = df_new["上回"].fillna(df_new["現價"])
-                df_new["走勢"] = ((df_new["上回"] - df_new["現價"]) / df_new["上回"] * 100).round(1)
-            else:
-                df_new["走勢"] = 0.0
+    race_no = st.selectbox("選擇場次", range(1, 15))
+    if st.button("🔄 立即更新數據", type="primary"):
+        with st.status("正在抓取數據...", expanded=True) as status:
+            # 步驟 1: 抓賠率
+            st.write("連線 HKJC...")
+            odds_data = get_hkjc_odds(race_no)
+            
+            # 步驟 2: 抓馬名
+            st.write("連線 SCMP (馬名)...")
+            name_data = get_scmp_info(race_no)
+            
+            # 整合
+            rows = []
+            for h_no, odds in odds_data.items():
+                name = name_data.get(h_no, f"馬匹 {h_no}")
+                rows.append({"馬號": h_no, "馬名": name, "現價": odds})
+            
+            if rows:
+                df = pd.DataFrame(rows)
+                # 計算簡單分數
+                df["得分"] = df["現價"].apply(lambda x: 50 if x<5 else (30 if x<10 else 10))
                 
-            curr["current_df"] = df_new
-            curr["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
-            st.success("更新成功")
-            st.rerun()
-        else:
-            st.error("更新失敗")
-
-# 顯示區域
-curr_data = race_storage[sel_race]
+                # 計算走勢 (如果有舊數據)
+                old_key = f"race_{race_no}"
+                if old_key in st.session_state['race_data']:
+                    old_df = st.session_state['race_data'][old_key]
+                    merged = df.merge(old_df[['馬號', '現價']], on='馬號', suffixes=('', '_old'), how='left')
+                    df["走勢"] = ((merged['現價_old'] - merged['現價']) / merged['現價_old'] * 100).fillna(0).round(1)
+                else:
+                    df["走勢"] = 0.0
+                
+                st.session_state['race_data'][f"race_{race_no}"] = df
+                status.update(label="更新完成", state="complete")
+            else:
+                status.update(label="找不到數據 (可能今日無賽事)", state="error")
 
 with col2:
-    st.info(f"第 {sel_race} 場 | 更新時間: {curr_data['last_update']}")
-    
-    with st.expander("查看日誌"):
-        st.text(curr_data["debug_info"])
+    data_key = f"race_{race_no}"
+    if data_key in st.session_state['race_data']:
+        df = st.session_state['race_data'][data_key]
+        df = df.sort_values("現價") # 賠率低到高排序
         
-    if not curr_data["current_df"].empty:
-        df_display = curr_data["current_df"].copy()
-        df_display["得分"] = df_display.apply(get_score, axis=1)
+        # 首選卡片
+        best = df.iloc[0]
+        st.markdown(f"""
+        <div style="padding:15px; border-radius:10px; background:#e3f2fd; border:2px solid #2196f3; margin-bottom:15px;">
+            <h3 style="margin:0; color:#0d47a1;">🔥 熱門首選：#{best['馬號']} {best['馬名']}</h3>
+            <p style="margin:5px 0 0 0; font-size:18px;"><b>{best['現價']}</b> (走勢: {best['走勢']}%)</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # 排序
-        df_display = df_display.sort_values("得分", ascending=False).reset_index(drop=True)
-        
-        # 顯示卡片
-        best_horse = df_display.iloc[0]
-        st.metric("推薦首選", f"#{best_horse['馬號']} (得分: {best_horse['得分']})", f"賠率: {best_horse['現價']}")
-        
+        # 表格
         st.dataframe(
-            df_display,
+            df, 
             column_config={
-                "現價": st.column_config.NumberColumn("賠率", format="%.1f"),
-                "走勢": st.column_config.NumberColumn("走勢 (%)", format="%.1f%%"),
+                "現價": st.column_config.NumberColumn(format="%.1f"),
+                "走勢": st.column_config.NumberColumn(format="%.1f%%"),
+                "得分": st.column_config.ProgressColumn(min_value=0, max_value=60)
             },
+            hide_index=True,
             use_container_width=True
         )
     else:
-        st.warning("暫無數據，請點擊左側「更新數據」")
+        st.info("請點擊左側按鈕更新數據")
