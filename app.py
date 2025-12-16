@@ -6,21 +6,20 @@ import os
 import requests
 import time
 import random
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.19 (XML 多網域搜索) =====================
-APP_VERSION = "V1.19 (Multi-XML)"
+# ===================== 版本 V1.20 (JCBW Mobile API) =====================
+APP_VERSION = "V1.20 (Mobile API)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
-# 模擬真實 Chrome
+# 關鍵：模擬 iPhone 的 Racing Touch App
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
-    "Connection": "keep-alive"
+    "User-Agent": "HKJC_Racing_Touch/1.0 (iPhone; iOS 16.0; Scale/3.00)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "Host": "bet.hkjc.com",  # 有時需要強制指定
 }
 
 @st.cache_resource
@@ -41,95 +40,97 @@ race_storage = get_storage()
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-def fetch_xml_odds_multi(r_no):
-    # XML 路徑通常是固定的，但網域會變
-    xml_path = "/racing/xml/odds/win/win_eng.xml"
-    
-    # 定義可能的網域列表
-    domains = [
-        "https://racing.hkjc.com",       # 最有可能
-        "https://bet.hkjc.com",          # 備用
-        "https://common.hkjc.com",       # 共用資源
-        "https://www.hkjc.com"           # 主網域
+def fetch_mobile_api(r_no):
+    # 這是一個隱藏的 API 端點，專門給手機 App 用
+    # 網址結構可能會變，我們先試最常見的
+    urls = [
+        "https://bet.hkjc.com/racing/getXML.aspx",  # 舊版 App 端點 (回傳可能是 JSON)
+        "https://bet.hkjc.com/racing/jsonData.aspx" # 新版通用端點
     ]
     
     logs = []
     session = requests.Session()
     session.headers.update(HEADERS)
     
-    # 1. Session 預熱：先訪問一次主頁，獲取 Cookies
-    try:
-        session.get("https://bet.hkjc.com/index.aspx", timeout=3)
-        logs.append("Session 預熱成功 (Cookies 已獲取)")
-    except:
-        logs.append("Session 預熱失敗 (但不影響嘗試)")
-
-    # 2. 輪詢所有網域
-    for domain in domains:
-        full_url = f"{domain}{xml_path}"
-        logs.append(f"嘗試下載: {full_url}")
+    # 預熱
+    try: session.get("https://bet.hkjc.com/index.aspx", timeout=3)
+    except: pass
+    
+    for url in urls:
+        logs.append(f"嘗試 API: {url}")
         
-        try:
-            resp = session.get(full_url, timeout=5)
-            logs.append(f"HTTP 狀態: {resp.status_code}")
-            
-            if resp.status_code == 200:
-                # 檢查內容是否真的是 XML (有些會回傳 200 但其實是 HTML 錯誤頁)
-                if b"<WIN" in resp.content or b"<?xml" in resp.content:
+        # 參數非常重要，這是模擬 App 的關鍵
+        params = {
+            "type": "winodds",
+            "date": datetime.now(HKT).strftime("%Y-%m-%d"), # 必須是當天
+            "venue": "HV", # 先試 HV
+            "start": r_no,
+            "end": r_no
+        }
+        
+        # 嘗試 ST 和 HV
+        for venue in ["HV", "ST"]:
+            params["venue"] = venue
+            try:
+                resp = session.get(url, params=params, timeout=5)
+                logs.append(f"[{venue}] HTTP: {resp.status_code}")
+                
+                if resp.status_code == 200:
+                    # 檢查是否為 JSON
                     try:
-                        root = ET.fromstring(resp.content)
-                        logs.append("XML 解析成功！")
+                        data = resp.json()
+                        logs.append("JSON 解析成功")
                         
-                        # 尋找對應場次
-                        race_node = None
-                        # 支援 id="1" 或 no="1"
-                        for race in root.findall(".//RACE"):
-                            if race.get("no") == str(r_no) or race.get("id") == str(r_no):
-                                race_node = race
-                                break
-                        
-                        if race_node:
-                            logs.append(f"找到第 {r_no} 場數據")
+                        # 檢查 OUT 欄位
+                        raw = data.get("OUT", "")
+                        if raw:
                             res = []
-                            for horse in race_node.findall("HORSE"):
-                                h_no = horse.get("no")
-                                h_odds = horse.get("odds")
-                                h_name = horse.get("name") # XML 有時包含馬名
-                                
-                                if h_no and h_odds:
-                                    try:
-                                        val = float(h_odds)
-                                        if val < 900: 
-                                            row = {"馬號": int(h_no), "現價": val}
-                                            if h_name: row["馬名"] = h_name
-                                            res.append(row)
-                                    except: pass
+                            # 格式通常是 "1=2.5;2=3.8;..."
+                            for part in raw.split(";"):
+                                if "=" in part:
+                                    k, v = part.split("=")
+                                    if k.isdigit():
+                                        try:
+                                            val = float(v)
+                                            if val < 900:
+                                                res.append({"馬號": int(k), "現價": val})
+                                        except: pass
                             
                             if res:
                                 df = pd.DataFrame(res)
-                                if "馬名" not in df.columns:
-                                    df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
+                                df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
                                 return df, "\n".join(logs)
                             else:
-                                logs.append("該場次數據為空")
+                                logs.append("OUT 欄位解析後無數據")
                         else:
-                            logs.append("XML 中無此場次 (可能未開售)")
-                        
-                        # 如果成功下載並解析 XML，即使該場次沒數據，也沒必要試其他網域了
-                        break 
-                        
-                    except ET.ParseError:
-                        logs.append("XML 格式解析錯誤")
-                else:
-                    logs.append("回傳內容不是有效的 XML (可能是 HTML 錯誤頁)")
-            
-        except Exception as e:
-            logs.append(f"連線錯誤: {str(e)}")
-            
+                            logs.append("JSON 中沒有 OUT 欄位")
+                            
+                    except json.JSONDecodeError:
+                        logs.append("回傳的不是 JSON (可能又是 HTML 錯誤頁)")
+                        # 如果不是 JSON，試試看是不是純文字格式
+                        if "=" in resp.text and ";" in resp.text:
+                            # 可能是舊版純文字回應
+                            res = []
+                            for part in resp.text.split(";"):
+                                if "=" in part:
+                                    k, v = part.split("=")
+                                    if k.isdigit():
+                                        try:
+                                            val = float(v)
+                                            if val < 900: res.append({"馬號": int(k), "現價": val})
+                                        except: pass
+                            if res:
+                                df = pd.DataFrame(res)
+                                df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
+                                return df, "\n".join(logs)
+
+            except Exception as e:
+                logs.append(f"錯誤: {str(e)}")
+                
     return None, "\n".join(logs)
 
 def fetch_data(r_no, t_date):
-    return fetch_xml_odds_multi(r_no)
+    return fetch_mobile_api(r_no)
 def gen_demo():
     rows = []
     for i in range(1, 13):
@@ -237,7 +238,7 @@ with st.sidebar:
     
     if app_mode == "📡 實時":
         st.divider()
-        sel_date = st.date_input("日期 (XML自動最新)", value=datetime.now(HKT).date())
+        sel_date = st.date_input("日期", value=datetime.now(HKT).date())
         sel_race = st.radio("場次", list(range(1, 15)), format_func=lambda x: f"賽事 {x}", horizontal=True)
         st_autorefresh(interval=30000, key="auto_refresh")
         st.divider()
@@ -252,7 +253,7 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 掃描 XML 賠率", type="primary", use_container_width=True):
+        if st.button("🔄 更新賠率 (Mobile)", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
                 log = "Demo"
@@ -283,7 +284,7 @@ if app_mode == "📡 實時":
     
     with c2: 
         st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-        with st.expander("📝 掃描日誌 (Multi-XML Log)", expanded=True):
+        with st.expander("📝 Mobile API 日誌", expanded=True):
             st.code(curr["debug_info"])
 
     with st.expander("🛠️ 排位資料"):
