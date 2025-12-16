@@ -3,151 +3,146 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta, timezone
 
-# ===================== V1.42 (Dual Fetch: Info + Odds) =====================
-# 雙重抓取模式：
-# 1. 抓取 RaceCard (排位表) -> 獲取馬號、馬名、騎師、檔位
-# 2. 抓取 Odds (賠率表) -> 獲取獨贏、位置賠率
-# 3. 合併顯示
+# ===================== V1.43 (Venue Fix + Fuzzy Column Match) =====================
+# 針對「明明有賠率卻抓不到」的問題進行修復
+# 1. 強制加入 Racecourse (HV/ST) 參數
+# 2. 對賠率欄位進行模糊匹配 (解決多層標題問題)
 
-st.set_page_config(page_title="賽馬智腦 V1.42", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.43", layout="wide")
 HKT = timezone(timedelta(hours=8))
 
-# ----------------- 核心邏輯 -----------------
+# ----------------- 輔助函數 -----------------
+def get_default_settings():
+    """預設時間與場地"""
+    now = datetime.now(HKT)
+    # 預設抓明天
+    target = now + timedelta(days=1) if now.weekday() == 1 else now
+    # 判斷場地：週三通常是 HV，週六日通常是 ST
+    venue = "HV" if target.weekday() == 2 else "ST"
+    return target.strftime("%Y/%m/%d"), venue
 
-def get_next_race_date():
-    """預設抓取週三或賽事日"""
-    today = datetime.now(HKT)
-    # 簡單邏輯：週二就抓明天(週三)
-    if today.weekday() == 1: 
-        next_r = today + timedelta(days=1)
-        return next_r.strftime("%Y/%m/%d"), f"{next_r.strftime('%Y-%m-%d')} (週三)"
-    return today.strftime("%Y/%m/%d"), today.strftime("%Y-%m-%d")
+def clean_columns(df):
+    """清理 Pandas 讀取到的混亂欄位名稱"""
+    new_cols = []
+    for col in df.columns:
+        # 如果是多層索引 (MultiIndex)，合併成字串
+        if isinstance(col, tuple):
+            c_str = "".join([str(x) for x in col])
+        else:
+            c_str = str(col)
+        # 移除空格和換行
+        c_str = c_str.replace(" ", "").replace("\r", "").replace("\n", "")
+        new_cols.append(c_str)
+    df.columns = new_cols
+    return df
 
-def fetch_table_via_pandas(url, keyword_check=None):
-    """通用函數：給網址，回傳最像樣的表格"""
+def fetch_odds_robust(date_str, race_no, venue):
+    """抓取賠率表 (容錯版)"""
+    # 網址加入 Racecourse 參數
+    url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/Odds/WinPlaceAndWB.aspx?RaceDate={date_str}&Racecourse={venue}&RaceNo={race_no}"
+    
+    log = [f"連線: {url}"]
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=8)
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         
+        # 檢查是否轉向到無資料頁面
         if "沒有相符的資料" in resp.text:
-            return None, "官方回傳無資料"
+            return pd.DataFrame(), "\n".join(log) + "\n官方回傳: 無此場次資料 (請檢查日期/場地)"
 
         dfs = pd.read_html(resp.text)
         
-        # 挑選最好的表格
-        best_df = pd.DataFrame()
+        # 尋找賠率表
+        target_df = pd.DataFrame()
         max_rows = 0
         
         for df in dfs:
-            # 清理欄位
-            df.columns = [str(c).replace(' ', '').replace('\r', '').replace('\n', '') for c in df.columns]
-            
-            # 如果指定了關鍵字，必須包含該欄位
-            if keyword_check and keyword_check not in df.columns:
-                continue
-                
-            if len(df) > max_rows:
-                best_df = df
+            df = clean_columns(df)
+            # 賠率表通常有 '馬號' 和 '馬名'
+            if len(df) > max_rows and ('馬號' in str(df.columns) or 'Horse' in str(df.columns)):
+                target_df = df
                 max_rows = len(df)
-                
-        return best_df, f"成功解析，共 {len(best_df)} 筆"
+        
+        if not target_df.empty:
+            log.append(f"找到表格，欄位: {list(target_df.columns)}")
+            
+            # 尋找關鍵欄位 (模糊搜尋)
+            win_col = None
+            place_col = None
+            no_col = None
+            
+            for c in target_df.columns:
+                if "馬號" in c or "No." in c: no_col = c
+                if "獨贏" in c or "Win" in c: win_col = c
+                if "位置" in c or "Place" in c: place_col = c
+            
+            # 重新命名欄位以便合併
+            rename_map = {}
+            if no_col: rename_map[no_col] = "馬號"
+            if win_col: rename_map[win_col] = "獨贏"
+            if place_col: rename_map[place_col] = "位置"
+            
+            target_df = target_df.rename(columns=rename_map)
+            
+            # 確保有抓到「獨贏」
+            if "獨贏" in target_df.columns:
+                return target_df, "\n".join(log)
+            else:
+                log.append("⚠️ 警告: 表格中找不到『獨贏』相關欄位，可能馬會改了標題")
+                return target_df, "\n".join(log)
+        
+        return pd.DataFrame(), "\n".join(log) + "\n找不到賠率表格"
+        
     except Exception as e:
-        return None, str(e)
-
-def fetch_combined_data(date_str, race_no):
-    log = []
-    
-    # 1. 抓取排位表 (Race Card) - 負責靜態資料
-    url_card = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_str}&RaceNo={race_no}"
-    df_card, msg_card = fetch_table_via_pandas(url_card, keyword_check="馬名")
-    log.append(f"排位表: {msg_card}")
-    
-    # 2. 抓取賠率表 (Odds) - 負責動態賠率
-    url_odds = f"https://racing.hkjc.com/racing/information/Chinese/Racing/Odds/WinPlaceAndWB.aspx?RaceDate={date_str}&RaceNo={race_no}"
-    df_odds, msg_odds = fetch_table_via_pandas(url_odds, keyword_check="獨贏")
-    log.append(f"賠率表: {msg_odds}")
-    
-    # 3. 合併邏輯
-    if df_card is not None and not df_card.empty:
-        # 確保有馬號欄位，轉為整數以方便合併
-        if '馬號' in df_card.columns:
-            # 處理馬號可能有 "*" 或其他符號的情況
-            df_card['JoinKey'] = pd.to_numeric(df_card['馬號'], errors='coerce')
-        
-        # 處理賠率表
-        if df_odds is not None and not df_odds.empty:
-            if '馬號' in df_odds.columns:
-                df_odds['JoinKey'] = pd.to_numeric(df_odds['馬號'], errors='coerce')
-                
-                # 只保留賠率相關欄位，避免欄位重複
-                cols_to_use = ['JoinKey']
-                if '獨贏' in df_odds.columns: cols_to_use.append('獨贏')
-                if '位置' in df_odds.columns: cols_to_use.append('位置')
-                
-                df_odds_clean = df_odds[cols_to_use]
-                
-                # 合併！ (Left Join: 以排位表為主)
-                df_final = pd.merge(df_card, df_odds_clean, on='JoinKey', how='left')
-                
-                # 填充空值
-                df_final['獨贏'] = df_final['獨贏'].fillna("未開盤")
-                df_final['位置'] = df_final['位置'].fillna("-")
-                
-                return df_final, "\n".join(log)
-        
-        # 如果抓不到賠率表 (可能未開盤)，直接回傳排位表，並補上「未開盤」
-        df_card['獨贏'] = "未開盤"
-        df_card['位置'] = "-"
-        return df_card, "\n".join(log)
-        
-    return pd.DataFrame(), "\n".join(log)
+        return pd.DataFrame(), "\n".join(log) + f"\n錯誤: {str(e)}"
 
 # ----------------- UI 介面 -----------------
-st.title("🏇 賽馬智腦 V1.42 (雙核心抓取)")
+st.title("🏇 賽馬智腦 V1.43 (診斷修復版)")
 
-d_str, d_lbl = get_next_race_date()
-st.info(f"📅 目標賽事: **{d_lbl}**")
+def_date, def_venue = get_default_settings()
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    user_date = st.text_input("日期 (YYYY/MM/DD)", value=d_str)
-    race_no = st.selectbox("場次", range(1, 15))
+    st.markdown("### 🔧 參數設定")
+    date_input = st.text_input("日期 (YYYY/MM/DD)", value=def_date)
+    venue_input = st.radio("場地 (Venue)", ["HV (跑馬地)", "ST (沙田)"], index=0 if def_venue=="HV" else 1, horizontal=True)
+    race_no = st.number_input("場次", 1, 14, 1)
     
-    if st.button("🔄 獲取排位 + 即時賠率", type="primary"):
-        with st.spinner("雙線程讀取中 (排位表 + 賠率表)..."):
-            df, log = fetch_combined_data(user_date, race_no)
-            st.session_state['data_142'] = df
-            st.session_state['log_142'] = log
+    venue_code = "HV" if "HV" in venue_input else "ST"
+    
+    if st.button("🔍 抓取賠率", type="primary"):
+        with st.spinner("正在解析..."):
+            df, log = fetch_odds_robust(date_input, race_no, venue_code)
+            st.session_state['df_143'] = df
+            st.session_state['log_143'] = log
 
 with col2:
-    if 'data_142' in st.session_state:
-        df = st.session_state['data_142']
-        log = st.session_state['log_142']
+    if 'df_143' in st.session_state:
+        df = st.session_state['df_143']
+        log = st.session_state['log_143']
         
         if not df.empty:
-            # 判斷是否真的有賠率數據 (不是 "未開盤")
-            has_odds = False
-            if '獨贏' in df.columns:
-                # 檢查是否含有數字
-                sample = str(df['獨贏'].iloc[0])
-                if any(char.isdigit() for char in sample):
-                    has_odds = True
-            
-            status_icon = "🟢" if has_odds else "🟡"
-            status_text = "賠率已更新" if has_odds else "等待官方開盤 (已顯示排位)"
-            
-            st.subheader(f"第 {race_no} 場 | {status_icon} {status_text}")
-            
-            # 顯示
-            # 挑選欄位
-            show_cols = ['馬號', '馬名', '獨贏', '位置', '騎師', '練馬師', '檔位']
-            final_cols = [c for c in show_cols if c in df.columns]
-            
-            st.dataframe(df[final_cols], use_container_width=True, hide_index=True)
-            
-            with st.expander("查看抓取日誌"):
-                st.text(log)
+            # 檢查是否有賠率
+            if "獨贏" in df.columns:
+                st.success(f"成功抓取第 {race_no} 場賠率！")
+                
+                # 簡單排序 (如果獨贏是數字)
+                try:
+                    df["SortKey"] = pd.to_numeric(df["獨贏"], errors='coerce').fillna(999)
+                    df = df.sort_values("SortKey")
+                except: pass
+                
+                st.dataframe(
+                    df[["馬號", "馬名", "獨贏", "位置"]], 
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.warning("抓到了表格，但找不到『獨贏』欄位。請查看下方原始資料。")
+                st.write(df)
         else:
-            st.error("查無資料")
+            st.error("抓取失敗")
+            
+        with st.expander("🛠️ 除錯日誌 (Debug Log)"):
             st.text(log)
+            st.caption("如果官方回傳無資料，請嘗試切換場地 (HV/ST)。")
