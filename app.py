@@ -1,220 +1,182 @@
 import streamlit as st
 import pandas as pd
 import requests
-import xml.etree.ElementTree as ET
+import re
+import json
 from datetime import datetime, timedelta, timezone
 
-# ===================== V1.44 (SCMP Names + HKJC XML Odds) =====================
-# 這是最底層的解決方案：
-# 1. SCMP 負責提供馬名、騎師 (靜態網頁，不易被擋，已修正解析 Bug)
-# 2. HKJC XML 負責提供即時賠率 (純數據接口，極速且不擋 IP)
+# ===================== V1.45 (Best RaceCard + JSON App Odds) =====================
+# 排位表：使用 V1.41 的 Pandas 暴力解析法 (racing.hkjc.com) - 已驗證最穩定
+# 賠率：使用 HKJC App 的後端 JSON 接口 (扮成手機 App 取數據)
 
-st.set_page_config(page_title="賽馬智腦 V1.44", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.45", layout="wide")
 HKT = timezone(timedelta(hours=8))
 
-# ----------------- 1. HKJC XML 賠率抓取 (核心武器) -----------------
-def fetch_hkjc_xml_odds(date_str, venue, race_no):
+# ----------------- 1. 排位表抓取 (V1.41 核心邏輯) -----------------
+def fetch_race_card_v141(date_str, race_no):
     """
-    直接從馬會舊版接口獲取 XML 格式賠率
-    URL: https://bet.hkjc.com/racing/getXML.aspx?type=winplacewb&date=2025-12-17&venue=HV&raceno=1
+    從 racing.hkjc.com 資訊網抓取排位表
     """
-    # 日期格式必須是 YYYY-MM-DD
-    xml_date = date_str.replace("/", "-")
-    url = f"https://bet.hkjc.com/racing/getXML.aspx?type=winplacewb&date={xml_date}&venue={venue}&raceno={race_no}"
+    url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_str}&RaceNo={race_no}"
+    log = [f"排位表連線: {url}"]
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Referer": "https://bet.hkjc.com/"
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        
+        if "沒有相符的資料" in resp.text:
+            return pd.DataFrame(), "\n".join(log) + "\n官方回傳無資料"
+
+        dfs = pd.read_html(resp.text)
+        
+        # 挑選最大的表格
+        target_df = pd.DataFrame()
+        max_rows = 0
+        
+        for df in dfs:
+            # 清理欄位
+            df.columns = [str(c).replace(' ', '').replace('\r', '').replace('\n', '') for c in df.columns]
+            
+            if len(df) > max_rows:
+                # 簡單檢查是否像排位表
+                if '馬名' in df.columns or '馬號' in df.columns or 'Horse' in df.columns:
+                    target_df = df
+                    max_rows = len(df)
+        
+        if not target_df.empty:
+            log.append(f"成功鎖定排位表，共 {len(target_df)} 匹")
+            # 確保馬號是數字類型，方便後續合併
+            if '馬號' in target_df.columns:
+                target_df['馬號'] = pd.to_numeric(target_df['馬號'], errors='coerce')
+            return target_df, "\n".join(log)
+            
+        return pd.DataFrame(), "\n".join(log) + "\n找不到排位表格"
+
+    except Exception as e:
+        return pd.DataFrame(), "\n".join(log) + f"\n排位表錯誤: {str(e)}"
+
+# ----------------- 2. 賠率抓取 (App JSON 接口) -----------------
+def fetch_odds_json(race_no):
+    """
+    嘗試從 bet.hkjc.com 的 JSON 接口獲取賠率
+    這個接口通常比網頁版更穩定，因為它是給 AJAX 用的
+    """
+    # 注意：這個 JSON 接口通常不需要日期，它只回傳「當前最近賽事」的賠率
+    # 如果今天是週二，它可能回傳空的，或者是明天第一場的數據
+    
+    url = "https://bet.hkjc.com/racing/jsonData.aspx"
+    # 參數：type=winodds (獨贏賠率)
+    params = {
+        "type": "winodds",
+        "date": datetime.now(HKT).strftime("%Y-%m-%d"), 
+        "venue": "HV", # 跑馬地
+        "start": race_no,
+        "end": race_no
     }
     
-    log = f"XML 連線: {url}\n"
+    log = [f"賠率連線 (JSON): {url}"]
     odds_map = {}
     
     try:
-        resp = requests.get(url, headers=headers, timeout=5)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            "Referer": "https://bet.hkjc.com/racing/"
+        }
+        
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        
         if resp.status_code == 200:
-            # 解析 XML
-            try:
-                root = ET.fromstring(resp.text)
-                # 尋找所有馬匹節點
-                # 結構通常是 <pool><horse number="1" odds="2.3" ... /></pool>
-                count = 0
-                for horse in root.findall(".//horse"):
-                    h_no = horse.get("number")
-                    h_odds = horse.get("odds")
-                    
-                    if h_no and h_odds:
-                        # 處理 "SCR" (退出) 或其他非數字狀態
-                        if "SCR" in h_odds:
-                            odds_map[int(h_no)] = "退出"
-                        else:
-                            odds_map[int(h_no)] = h_odds
-                        count += 1
+            txt = resp.text
+            # 這個 JSON 的格式非常奇怪，有時候是 "1"="2.3"; "2"="4.5";
+            # 有時候是標準 JSON {"1": "2.3", ...}
+            
+            # 方法 A: 正則表達式抓取 "馬號"="賠率"
+            matches = re.findall(r'(\d+)\s*=\s*(\d+\.\d+)', txt)
+            for m in matches:
+                odds_map[int(m[0])] = m[1]
                 
-                if count > 0:
-                    log += f"XML 解析成功: 獲取 {count} 筆賠率\n"
-                    return odds_map, log
-                else:
-                    log += "XML 解析成功但無馬匹數據 (可能未開盤)\n"
-            except ET.ParseError:
-                log += "XML 格式錯誤 (可能非標準響應)\n"
+            # 方法 B: 正則抓取 JSON 格式 "1":"2.3"
+            if not odds_map:
+                matches = re.findall(r'"(\d+)"\s*:\s*"(\d+\.\d+)"', txt)
+                for m in matches:
+                    odds_map[int(m[0])] = m[1]
+            
+            if odds_map:
+                log.append(f"成功獲取 {len(odds_map)} 筆賠率")
+            else:
+                log.append(f"回應內容 (前100字): {txt[:100]}...")
+                log.append("解析後無賠率數據 (可能未開盤)")
         else:
-            log += f"HTTP 錯誤: {resp.status_code}\n"
+            log.append(f"HTTP 錯誤: {resp.status_code}")
             
     except Exception as e:
-        log += f"XML 連線失敗: {str(e)}\n"
+        log.append(f"賠率錯誤: {str(e)}")
         
-    return {}, log
-
-# ----------------- 2. SCMP 馬名抓取 (修正版) -----------------
-def fetch_scmp_names_fixed(date_str, race_no):
-    """
-    修正後的 SCMP 解析器：遍歷所有表格，找出最大的那個
-    解決「只抓到 3 隻馬」的問題
-    """
-    # SCMP 日期格式: YYYYMMDD
-    scmp_date = date_str.replace("/", "").replace("-", "")
-    url = f"https://racing.scmp.com/racing/race-card/{scmp_date}/race/{race_no}"
-    log = f"SCMP 連線: {url}\n"
-    
-    try:
-        # 使用 Pandas 讀取所有表格
-        dfs = pd.read_html(url, timeout=10)
-        log += f"找到 {len(dfs)} 個表格\n"
-        
-        target_df = pd.DataFrame()
-        max_len = 0
-        
-        # 尋找真正的主表格 (行數最多，且包含 'Horse' 或 'Jockey')
-        for df in dfs:
-            # 轉換欄位為字串並大寫
-            df.columns = [str(c).upper() for c in df.columns]
-            
-            # SCMP 的表格特徵
-            if len(df) > max_len:
-                # 檢查是否有關鍵欄位
-                has_horse = any("HORSE" in c for c in df.columns)
-                has_no = any("NO." in c for c in df.columns)
-                
-                if has_horse or has_no:
-                    target_df = df
-                    max_len = len(df)
-        
-        if not target_df.empty:
-            log += f"鎖定主表格，共 {len(target_df)} 匹馬\n"
-            
-            # 標準化欄位名稱
-            # SCMP 欄位通常是: No., Horse, Jockey, Trainer, ...
-            # 我們需要重新命名以方便處理
-            
-            # 尋找對應欄位索引
-            cols = target_df.columns
-            rename_map = {}
-            
-            for c in cols:
-                if "NO." in c: rename_map[c] = "馬號"
-                elif "HORSE" in c: rename_map[c] = "馬名"
-                elif "JOCKEY" in c: rename_map[c] = "騎師"
-                elif "TRAINER" in c: rename_map[c] = "練馬師"
-                elif "DRAW" in c: rename_map[c] = "檔位"
-            
-            target_df = target_df.rename(columns=rename_map)
-            
-            # 簡單清理
-            if "馬號" in target_df.columns:
-                target_df["馬號"] = pd.to_numeric(target_df["馬號"], errors='coerce')
-                target_df = target_df.dropna(subset=["馬號"]) # 移除無效行
-                target_df["馬號"] = target_df["馬號"].astype(int)
-            
-            return target_df, log
-        else:
-            return pd.DataFrame(), log + "錯誤: 找不到符合條件的主表格\n"
-            
-    except Exception as e:
-        return pd.DataFrame(), log + f"SCMP 解析失敗: {str(e)}\n"
+    return odds_map, "\n".join(log)
 
 # ----------------- UI 介面 -----------------
-st.title("🏇 賽馬智腦 V1.44 (協議混合版)")
+st.title("🏇 賽馬智腦 V1.45 (V1.41排位 + JSON賠率)")
 
-# 自動計算預設日期 (週二 -> 明天週三)
+# 自動設定日期
 now = datetime.now(HKT)
-if now.weekday() == 1: # 週二
-    def_date = (now + timedelta(days=1)).strftime("%Y/%m/%d")
-    def_venue = "HV"
-else:
-    def_date = now.strftime("%Y/%m/%d")
-    def_venue = "HV" if now.weekday() == 2 else "ST"
+# 預設抓明天 (如果是週二)
+def_date = (now + timedelta(days=1)).strftime("%Y/%m/%d") if now.weekday() == 1 else now.strftime("%Y/%m/%d")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.markdown("### 📡 數據源設定")
+    st.markdown("### 🛠️ 執行")
     date_in = st.text_input("日期 (YYYY/MM/DD)", value=def_date)
-    venue_in = st.radio("場地", ["HV (跑馬地)", "ST (沙田)"], index=0 if def_venue=="HV" else 1, horizontal=True)
     race_in = st.number_input("場次", 1, 14, 1)
     
-    venue_code = "HV" if "HV" in venue_in else "ST"
-    
-    if st.button("🚀 執行混合抓取", type="primary"):
-        with st.status("正在執行雙重連線...", expanded=True) as status:
-            # 1. 抓 SCMP (馬名)
-            st.write("正在自 SCMP 下載排位表...")
-            df_scmp, log_scmp = fetch_scmp_names_fixed(date_in, race_in)
+    if st.button("🚀 執行", type="primary"):
+        # 1. 先抓排位 (我們知道這個一定行)
+        with st.status("正在讀取數據...", expanded=True) as status:
+            st.write("正在下載排位表 (V1.41 核心)...")
+            df, log_card = fetch_race_card_v141(date_in, race_in)
             
-            # 2. 抓 HKJC XML (賠率)
-            st.write("正在自 HKJC 投注伺服器獲取賠率...")
-            odds_map, log_xml = fetch_hkjc_xml_odds(date_in, venue_code, race_in)
-            
-            # 3. 合併
-            if not df_scmp.empty:
-                st.write("正在合併數據...")
-                # 建立賠率欄位
-                df_scmp["獨贏賠率"] = df_scmp["馬號"].map(odds_map).fillna("未開盤")
+            if not df.empty:
+                st.write("排位表下載成功，正在尋找賠率...")
+                # 2. 抓賠率
+                odds_map, log_odds = fetch_odds_json(race_in)
                 
-                st.session_state['df_144'] = df_scmp
-                st.session_state['log_144'] = log_scmp + "\n" + log_xml
+                # 3. 合併
+                if odds_map:
+                    st.write("賠率獲取成功，正在合併...")
+                    df["獨贏"] = df["馬號"].map(odds_map).fillna("未開盤")
+                else:
+                    st.write("暫無賠率數據，顯示「未開盤」")
+                    df["獨贏"] = "未開盤"
+                
+                st.session_state['df_145'] = df
+                st.session_state['log_145'] = log_card + "\n\n" + log_odds
                 status.update(label="完成", state="complete")
             else:
-                st.session_state['log_144'] = log_scmp
-                status.update(label="SCMP 抓取失敗", state="error")
+                st.session_state['log_145'] = log_card
+                status.update(label="排位表下載失敗", state="error")
 
 with col2:
-    if 'df_144' in st.session_state:
-        df = st.session_state['df_144']
-        log = st.session_state['log_144']
+    if 'df_145' in st.session_state:
+        df = st.session_state['df_145']
         
-        st.subheader(f"第 {race_in} 場賽事詳情")
+        st.subheader(f"第 {race_in} 場賽事")
         
-        # 顯示重點欄位
-        cols_to_show = ['馬號', '馬名', '獨贏賠率', '騎師', '練馬師', '檔位']
-        # 確保欄位存在
-        final_cols = [c for c in cols_to_show if c in df.columns]
+        # 檢查是否有賠率
+        has_odds = any(x != "未開盤" for x in df["獨贏"])
+        if has_odds:
+            st.success("🟢 賠率已更新")
+        else:
+            st.warning("🟡 僅顯示排位 (賠率未開盤)")
+            
+        # 顯示
+        cols = ['馬號', '馬名', '獨贏', '騎師', '練馬師', '檔位', '排位體重']
+        final_cols = [c for c in cols if c in df.columns]
         
-        # 高亮顯示賠率
         st.dataframe(
-            df[final_cols],
-            column_config={
-                "獨贏賠率": st.column_config.TextColumn(
-                    "獨贏 (Win)", 
-                    help="來自 HKJC XML 實時接口",
-                    width="medium"
-                ),
-                "馬名": st.column_config.TextColumn("馬名 (Horse)", width="large"),
-            },
-            use_container_width=True,
+            df[final_cols], 
+            use_container_width=True, 
             hide_index=True
         )
         
-        # 賠率狀態提示
-        has_odds = any(x != "未開盤" and x != "退出" for x in df["獨贏賠率"])
-        if has_odds:
-            st.success("🟢 已成功連線至 HKJC 投注系統並獲取即時賠率")
-        else:
-            st.warning("🟡 列表已建立，但 XML 接口暫無賠率數據 (請確認是否已開盤)")
-            
-    elif 'log_144' in st.session_state:
-        st.error("無法建立排位表，請檢查日誌")
         with st.expander("查看日誌"):
-            st.text(st.session_state['log_144'])
-    else:
-        st.info("👈 請點擊左側按鈕開始")
+            st.text(st.session_state['log_145'])
