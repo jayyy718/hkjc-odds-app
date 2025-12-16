@@ -166,8 +166,6 @@ def generate_demo_data():
         rows.append({"馬號": i, "馬名": f"模擬馬 {i}", "現價": odds})
     return pd.DataFrame(rows)
 
-
-
 # ===================== 2. 輔助函數 =====================
 def get_score(row):
     s = 0
@@ -497,4 +495,3 @@ elif app_mode == "📈 今日總覽":
             st.table(res_df.sort_values("場次"))
     else:
         st.info("今日尚未封存數據")
-
