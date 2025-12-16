@@ -1,100 +1,110 @@
 import streamlit as st
 import pandas as pd
 import requests
+import re
 from datetime import datetime, timedelta, timezone
 
-# ===================== V1.53 (On.cc Static Source) =====================
-# 排位表：HKJC 資訊網
-# 賠率：東方日報 (On.cc) - 這是靜態 HTML 檔案，最不容易失敗
+# ===================== V1.54 (Manual Text Intelligence) =====================
+# 核心理念：放棄自動連線賠率（因防火牆），改用「智能文本解析」
+# 排位表：依然自動抓取 (V1.41 核心，這部分很穩定)
+# 賠率：用戶「全選複製」網頁文字，程式自動提取數字
 
-st.set_page_config(page_title="賽馬智腦 V1.53", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.54", layout="wide")
 HKT = timezone(timedelta(hours=8))
 
-# --- 1. 排位表 (HKJC) ---
-def fetch_card_hkjc(date_str, race_no):
+# ----------------- 1. 自動抓取排位表 (最穩定的部分) -----------------
+@st.cache_data(ttl=600)
+def fetch_race_card_v141(date_str, race_no):
     url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_str}&RaceNo={race_no}"
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = 'utf-8'
         
-        # 解析
         dfs = pd.read_html(resp.text)
+        target_df = pd.DataFrame()
+        max_rows = 0
+        
         for df in dfs:
             df.columns = [str(c).replace(' ', '').replace('\r', '').replace('\n', '') for c in df.columns]
-            if len(df) > 5 and ('馬名' in df.columns or '馬號' in df.columns):
-                if '馬號' in df.columns:
-                    df['馬號'] = pd.to_numeric(df['馬號'], errors='coerce')
-                return df, "HKJC 排位下載成功"
-    except:
-        pass
-    return pd.DataFrame(), "錯誤：找不到排位表"
-
-# --- 2. 賠率 (On.cc 東方日報) ---
-def fetch_odds_oncc(date_str, race_no):
-    # On.cc 網址格式: https://racing.on.cc/racing/new/YYYYMMDD/rjodds/YYYYMMDD_RaceNo.html
-    # 這是一個靜態檔案，非常穩定
-    
-    date_compact = date_str.replace("/", "").replace("-", "") # 20251217
-    url = f"https://racing.on.cc/racing/new/{date_compact}/rjodds/{date_compact}_{race_no}.html"
-    
-    log = [f"連線 On.cc: {url}"]
-    odds_map = {}
-    
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        resp = requests.get(url, headers=headers, timeout=10)
-        
-        # 關鍵：On.cc 使用 Big5 編碼，必須設定，否則亂碼
-        resp.encoding = 'big5'
-        
-        if resp.status_code == 404:
-            return {}, "\n".join(log) + "\nHTTP 404: 該場次賠率頁面尚未生成 (可能太早)"
-            
-        dfs = pd.read_html(resp.text)
-        log.append(f"找到 {len(dfs)} 個表格")
-        
-        target_df = pd.DataFrame()
-        
-        for df in dfs:
-            # On.cc 的表格通常有 "馬號" 和 "獨贏"
-            # 欄位清理
-            df.columns = [str(c).strip() for c in df.columns]
-            
-            if "馬號" in df.columns and "獨贏" in df.columns:
+            if len(df) > max_rows and ('馬名' in df.columns or '馬號' in df.columns):
                 target_df = df
-                break
-            # 有時候欄位叫 "No."
-            if "No." in df.columns and "獨贏" in df.columns:
-                df = df.rename(columns={"No.": "馬號"})
-                target_df = df
-                break
-
+                max_rows = len(df)
+        
         if not target_df.empty:
-            log.append("成功解析賠率表")
-            for _, row in target_df.iterrows():
-                try:
-                    h_no = int(row["馬號"])
-                    h_win = row["獨贏"]
-                    # 過濾無效值
-                    if str(h_win) != "-" and str(h_win) != "":
-                        odds_map[h_no] = h_win
-                except: pass
-            
-            if odds_map:
-                return odds_map, "\n".join(log)
-            else:
-                return {}, "\n".join(log) + "\n表格解析後無數據"
-        else:
-            return {}, "\n".join(log) + "\n找不到符合格式的賠率表"
-
+            if '馬號' in target_df.columns:
+                target_df['馬號'] = pd.to_numeric(target_df['馬號'], errors='coerce')
+            return target_df, f"排位表下載成功 (共{len(target_df)}匹)"
+        return pd.DataFrame(), "錯誤: 找不到排位表格"
     except Exception as e:
-        return {}, "\n".join(log) + f"\n錯誤: {str(e)}"
+        return pd.DataFrame(), f"連線錯誤: {str(e)}"
 
-# --- UI ---
-st.title("🏇 賽馬智腦 V1.53 (On.cc 靜態源)")
+# ----------------- 2. 智能文本解析器 (核心武器) -----------------
+def parse_pasted_text(text):
+    """
+    強大的解析器：能吃下馬會網頁、App 或任何文字
+    自動尋找「馬號」與「賠率」的關聯
+    """
+    odds_map = {}
+    lines = text.strip().split('\n')
+    
+    # 策略 1: 尋找標準行 "1 浪漫勇士 2.3"
+    # Regex: 開頭是數字 -> 中間可能是文字 -> 結尾是小數點數字
+    pattern_standard = re.compile(r'^(\d+)\s+.*?\s+(\d+\.\d+)\s*$')
+    
+    # 策略 2: 簡單對 (馬號, 賠率) "1 2.3"
+    pattern_simple = re.compile(r'^(\d+)\s+(\d+\.\d+)\s*$')
+    
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        # 排除掉日期、場次等無關數字
+        if "場" in line or "2025" in line or "月" in line:
+            continue
+
+        match = None
+        
+        # 嘗試匹配
+        m1 = pattern_standard.search(line)
+        if m1:
+            h_no, h_odds = int(m1.group(1)), float(m1.group(2))
+            if 1 <= h_no <= 14 and 1.0 <= h_odds <= 300.0: # 合理性檢查
+                odds_map[h_no] = h_odds
+                continue
+                
+        m2 = pattern_simple.search(line)
+        if m2:
+            h_no, h_odds = int(m2.group(1)), float(m2.group(2))
+            if 1 <= h_no <= 14 and 1.0 <= h_odds <= 300.0:
+                odds_map[h_no] = h_odds
+                continue
+        
+        # 策略 3: 暴力拆解 (適用於複製了一整塊表格)
+        # 找出該行所有數字
+        nums = re.findall(r'\d+\.\d+|\d+', line)
+        if len(nums) >= 2:
+            # 假設第一個整數是馬號，最後一個浮點數是賠率
+            try:
+                # 找馬號 (第一個整數)
+                curr_no = int(nums[0])
+                # 找賠率 (倒數尋找第一個含小數點的)
+                curr_odds = 0.0
+                found_odds = False
+                for x in reversed(nums):
+                    if '.' in x:
+                        curr_odds = float(x)
+                        found_odds = True
+                        break
+                
+                if found_odds and 1 <= curr_no <= 14:
+                    odds_map[curr_no] = curr_odds
+            except: pass
+
+    return odds_map
+
+# ----------------- UI 介面 -----------------
+st.title("🏇 賽馬智腦 V1.54 (智能剪貼版)")
 
 now = datetime.now(HKT)
 def_date = (now + timedelta(days=1)).strftime("%Y/%m/%d") if now.weekday() == 1 else now.strftime("%Y/%m/%d")
@@ -102,45 +112,65 @@ def_date = (now + timedelta(days=1)).strftime("%Y/%m/%d") if now.weekday() == 1 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    date_in = st.text_input("日期 (YYYY/MM/DD)", value=def_date)
+    st.info("步驟 1：下載排位表")
+    date_in = st.text_input("日期", value=def_date)
     race_in = st.number_input("場次", 1, 14, 1)
     
-    if st.button("🚀 執行", type="primary"):
-        with st.status("運行中...", expanded=True) as s:
-            st.write("1. 抓取排位表 (HKJC)...")
-            df, msg1 = fetch_card_hkjc(date_in, race_in)
-            
-            if not df.empty:
-                st.write("2. 抓取賠率 (On.cc)...")
-                odds_map, msg2 = fetch_odds_oncc(date_in, race_in)
-                
-                if odds_map:
-                    df["獨贏"] = df["馬號"].map(odds_map).fillna("未開盤")
-                    s.update(label="成功！", state="complete")
-                else:
-                    df["獨贏"] = "未開盤"
-                    s.update(label="無賠率 (On.cc 尚未生成)", state="error")
-                
-                st.session_state['df_153'] = df
-                st.session_state['log_153'] = msg1 + "\n\n" + msg2
+    if st.button("📥 下載排位", type="primary"):
+        df, msg = fetch_race_card_v141(date_in, race_in)
+        st.session_state['df_154'] = df
+        st.session_state['msg_154'] = msg
+        # 重置賠率
+        if 'odds_154' in st.session_state: del st.session_state['odds_154']
+
+    st.markdown("---")
+    st.info("步驟 2：貼上賠率文字")
+    st.caption("請去馬會/頭條/App 複製賠率頁面的文字，貼在下方：")
+    
+    raw_text = st.text_area("在此貼上 (Ctrl+V)", height=200, placeholder="例如：\n1 號馬 3.5\n2 號馬 10.0\n...")
+    
+    if st.button("🔄 解析賠率"):
+        if raw_text:
+            odds = parse_pasted_text(raw_text)
+            if odds:
+                st.session_state['odds_154'] = odds
+                st.success(f"成功識別 {len(odds)} 匹馬的賠率！")
             else:
-                st.session_state['log_153'] = msg1
-                s.update(label="排位下載失敗", state="error")
+                st.error("無法識別文字中的賠率，請確認內容包含「馬號」與「數字」。")
 
 with col2:
-    if 'df_153' in st.session_state:
-        df = st.session_state['df_153']
+    if 'df_154' in st.session_state:
+        df = st.session_state['df_154'].copy()
         
-        has_odds = any(x != "未開盤" for x in df["獨贏"])
-        if has_odds:
-            st.success("🟢 賠率已更新 (來源: 東方日報)")
-        else:
-            st.warning("🟡 暫無賠率")
+        # 整合賠率
+        if 'odds_154' in st.session_state:
+            odds_map = st.session_state['odds_154']
+            df["獨贏"] = df["馬號"].map(odds_map).fillna("-")
             
+            # 計算推薦
+            try:
+                valid = df[pd.to_numeric(df["獨贏"], errors='coerce').notnull()].copy()
+                if not valid.empty:
+                    valid["Sort"] = valid["獨贏"].astype(float)
+                    best = valid.sort_values("Sort").iloc[0]
+                    st.markdown(f"""
+                    <div style="background:#e8f5e9;padding:10px;border-radius:5px;border:1px solid #4caf50;color:#2e7d32;">
+                        <b>🔥 賠率大熱：#{best['馬號']} {best['馬名']} ({best['獨贏']})</b>
+                    </div>
+                    """, unsafe_allow_html=True)
+            except: pass
+            
+        else:
+            df["獨贏"] = "等待貼上..."
+            
+        st.subheader(f"第 {race_in} 場排位表")
+        
         cols = ['馬號', '馬名', '獨贏', '騎師', '練馬師', '檔位']
         final = [c for c in cols if c in df.columns]
         
         st.dataframe(df[final], use_container_width=True, hide_index=True)
         
-        with st.expander("日誌"):
-            st.text(st.session_state['log_153'])
+    elif 'msg_154' in st.session_state:
+        st.error(st.session_state['msg_154'])
+    else:
+        st.write("👈 請先按左上角的「下載排位」")
