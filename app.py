@@ -4,12 +4,12 @@ import numpy as np
 import re
 from datetime import datetime, timedelta
 
-# ===================== V1.65 (Complete Race Info Edition) =====================
-# 特色：內建數據庫 + 密碼保護 + AI 勝率 + 日期場次選擇
+# ===================== V1.66 (Ultimate Format Edition) =====================
+# 特色：針對特定格式 [馬號, 綵衣, 馬名, 烙號, 負磅, 騎師, 檔位, 練馬師...] 進行精準解析
 
-st.set_page_config(page_title="賽馬智腦 V1.65", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.66", layout="wide")
 
-# --- 核心數據庫 (內嵌 2024/25 真實數據) ---
+# --- 核心數據庫 (2024/25) ---
 REAL_STATS = {
     "jockey": {
         "Z Purton": 22.9, "J McDonald": 21.3, "M Barzalona": 16.7, "J Moreira": 16.1, 
@@ -27,7 +27,7 @@ REAL_STATS = {
     }
 }
 
-# --- 中英對照字典 ---
+# --- 中英對照 ---
 NAME_MAPPING = {
     "潘頓": "Z Purton", "布文": "H Bowman", "麥道朗": "J McDonald", 
     "田泰安": "K Teetan", "何澤堯": "C Y Ho", "艾道拿": "B Avdulla",
@@ -49,7 +49,7 @@ NAME_MAPPING = {
 # --- AI 計算引擎 ---
 def calculate_ai_score(row):
     score = 0
-    # 1. 賠率 (佔比最大)
+    # 1. 賠率
     try:
         odds = float(row['獨贏'])
         if odds > 0:
@@ -57,15 +57,14 @@ def calculate_ai_score(row):
             score += implied_prob * 0.7 
     except: pass
         
-    # 2. 騎師數據
+    # 2. 騎師
     jockey_zh = str(row.get('騎師', '')).strip()
     jockey_en = NAME_MAPPING.get(jockey_zh, "")
     if not jockey_en and re.search(r'[a-zA-Z]', jockey_zh): jockey_en = jockey_zh
-    
     if jockey_en in REAL_STATS["jockey"]:
         score += REAL_STATS["jockey"][jockey_en] * 0.6
         
-    # 3. 練馬師數據
+    # 3. 練馬師
     trainer_zh = str(row.get('練馬師', '')).strip()
     trainer_en = NAME_MAPPING.get(trainer_zh, "")
     if trainer_en in REAL_STATS["trainer"]:
@@ -80,27 +79,41 @@ def calculate_ai_score(row):
     
     return score
 
-# --- 解析器 ---
-def parse_strict_card(text):
+# --- 精準排位解析器 (V1.66) ---
+def parse_card_v166(text):
+    """
+    格式: 馬號(0) 綵衣(1) 馬名(2) 烙號(3) 負磅(4) 騎師(5) 檔位(6) 練馬師(7) 評分(8) ...
+    """
     data = []
     lines = text.strip().split('\n')
     for line in lines:
         line = line.strip()
-        if not line or "馬號" in line: continue
+        if not line or "馬匹編號" in line: continue # 跳過標題
+        
         parts = line.split()
-        if len(parts) < 7 or not parts[0].isdigit(): continue
+        
+        # 至少要有到練馬師的長度 (8欄)
+        if len(parts) < 8: continue
+        
+        # 檢查第一欄是否為數字 (馬號)
+        if not parts[0].isdigit(): continue
+        
         try:
+            # 根據您提供的順序 mapping
             row = {
                 '馬號': int(parts[0]),
-                '馬名': parts[1],
-                '負磅': parts[2],
-                '騎師': parts[4],
-                '檔位': int(parts[5]),
-                '練馬師': parts[6],
-                '評分': parts[8] if len(parts) > 8 else "-"
+                '馬名': parts[2], # index 2
+                '負磅': parts[4], # index 4
+                '騎師': parts[5], # index 5
+                '檔位': int(parts[6]), # index 6 (關鍵!)
+                '練馬師': parts[7], # index 7
+                '評分': parts[8], # index 8
+                # '配備': parts[11] if len(parts) > 11 else ""
             }
             data.append(row)
-        except: continue
+        except:
+            continue
+            
     return pd.DataFrame(data)
 
 def parse_odds_universal(text):
@@ -124,12 +137,11 @@ def parse_odds_universal(text):
 if 'race_data' not in st.session_state: st.session_state['race_data'] = None
 if 'last_update' not in st.session_state: st.session_state['last_update'] = None
 if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'] = False
-# 新增賽事資訊 State
 if 'race_info' not in st.session_state: st.session_state['race_info'] = {"date": datetime.now().strftime("%Y-%m-%d"), "no": 1}
 
 # ===================== 介面 =====================
 
-st.sidebar.title("🏇 賽馬智腦 V1.65")
+st.sidebar.title("🏇 賽馬智腦 V1.66")
 page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
 
 if page == "🔒 後台管理":
@@ -144,30 +156,28 @@ if page == "🔒 後台管理":
             else:
                 st.error("密碼錯誤")
     else:
-        st.success("✅ 系統正常運作中 (內建 24/25 數據庫)")
+        st.success("✅ 系統正常運作中")
         
-        # --- 新增：賽事資訊選擇區 ---
-        st.subheader("1. 設定賽事資訊")
+        st.subheader("1. 賽事資訊")
         c_date, c_race = st.columns(2)
         with c_date:
-            input_date = st.date_input("賽事日期")
+            input_date = st.date_input("日期")
         with c_race:
-            input_race = st.number_input("場次", min_value=1, max_value=14, value=1)
+            input_race = st.number_input("場次", 1, 14, 1)
             
-        st.divider()
-        
-        # --- 資料輸入區 ---
-        st.subheader("2. 輸入資料")
+        st.subheader("2. 資料輸入")
         c1, c2 = st.columns(2)
         with c1:
-            st.info("排位表 (賽馬天地格式)")
-            card_text = st.text_area("格式: 馬號 馬名 負磅 +/- 騎師 檔位...", height=300)
+            st.info("排位表 (指定格式)")
+            st.caption("馬號 綵衣 馬名 烙號 負磅 騎師 檔位 練馬師...")
+            card_text = st.text_area("排位文字", height=300)
         with c2:
-            st.info("即時賠率 (馬會/App)")
-            odds_text = st.text_area("格式: 馬號 賠率", height=300)
+            st.info("即時賠率 (馬會)")
+            st.caption("馬號 賠率")
+            odds_text = st.text_area("賠率文字", height=300)
             
-        if st.button("🚀 計算 AI 勝率並發布", type="primary"):
-            df = parse_strict_card(card_text)
+        if st.button("🚀 發布", type="primary"):
+            df = parse_card_v166(card_text)
             if not df.empty:
                 if odds_text:
                     odds_map = parse_odds_universal(odds_text)
@@ -175,7 +185,6 @@ if page == "🔒 後台管理":
                 else:
                     df['獨贏'] = "-"
                 
-                # AI 計算
                 scores = []
                 for _, row in df.iterrows():
                     scores.append(calculate_ai_score(row))
@@ -187,58 +196,44 @@ if page == "🔒 後台管理":
                 else:
                     df['勝率%'] = 0.0
                 
-                # 儲存所有資料 (包含日期場次)
                 st.session_state['race_data'] = df
                 st.session_state['race_info'] = {"date": str(input_date), "no": input_race}
                 st.session_state['last_update'] = pd.Timestamp.now().strftime("%H:%M:%S")
                 
-                st.success(f"發布成功！已更新為【{input_date} 第 {input_race} 場】")
+                st.success(f"已更新！共 {len(df)} 匹馬。")
             else:
-                st.error("解析失敗：請檢查排位表格式")
+                st.error("解析失敗：請確認排位表格式是否正確。")
 
 else:
-    # --- 公眾看板 ---
-    
     if st.session_state['race_data'] is None:
-        st.title("📊 賽馬智腦分析看板")
-        st.info("👋 歡迎！請等待管理員發布賽事資料。")
+        st.title("📊 賽馬智腦")
+        st.info("請等待管理員發布。")
     else:
-        # 讀取資訊
         info = st.session_state['race_info']
-        date_str = info['date']
-        race_no = info['no']
-        
-        st.title(f"📊 {date_str} (第 {race_no} 場) AI 分析")
+        st.title(f"📊 {info['date']} (第 {info['no']} 場)")
         
         df = st.session_state['race_data'].copy()
-        
-        # 排序
         df = df.sort_values('勝率%', ascending=False).reset_index(drop=True)
         
-        # Top 4 卡片
         top4 = df.head(4)
         cols = st.columns(4)
         for i, col in enumerate(cols):
             if i < len(top4):
                 h = top4.iloc[i]
                 col.metric(
-                    label=f"No.{h['馬號']} {h['馬名']}",
+                    label=f"#{h['馬號']} {h['馬名']}",
                     value=f"{h['勝率%']}%",
                     delta=f"賠率: {h['獨贏']}"
                 )
         
         st.divider()
-        
-        # 詳細表格
         st.dataframe(
-            df[['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位']],
+            df[['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅', '評分']],
             column_config={
-                "勝率%": st.column_config.ProgressColumn("AI 預測勝率", format="%.1f%%", min_value=0, max_value=100),
+                "勝率%": st.column_config.ProgressColumn("AI 勝率", format="%.1f%%", min_value=0, max_value=100),
                 "獨贏": st.column_config.TextColumn("賠率"),
                 "馬號": st.column_config.NumberColumn("No.", format="%d"),
             },
             use_container_width=True,
             hide_index=True
         )
-        
-        st.caption(f"最後更新: {st.session_state['last_update']} | 數據來源: 2024/25 真實賽季數據庫")
