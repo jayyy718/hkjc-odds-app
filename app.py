@@ -6,12 +6,12 @@ import os
 import requests
 import time
 import random
-from bs4 import BeautifulSoup # 引入手術刀
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.29 (BeautifulSoup) =====================
-APP_VERSION = "V1.29 (Raw HTML Surgery)"
+# ===================== 版本 V1.30 (Syntax Fix) =====================
+APP_VERSION = "V1.30 (Stable BS4)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
@@ -35,7 +35,6 @@ def get_storage():
 
 race_storage = get_storage()
 
-# 擴充關鍵字庫
 JOCKEY_KEYWORDS = ['Purton', 'McDonald', 'Bowman', 'Teetan', 'Ho', 'Bentley', 'Ferraris', 'Hamelin', 'Atzeni', 'De Sousa', 'Avdulla', 'Mo', 'Wong', 'Chau', 'Yeung', 'Poon', 'Badel', 'Hewitson']
 TRAINER_KEYWORDS = ['Size', 'Lui', 'Hayes', 'Lor', 'Yip', 'Yiu', 'Fownes', 'Whyte', 'Hall', 'Newnham', 'Richards', 'Man', 'Shum', 'So', 'Tsui', 'Ng', 'Chang']
 
@@ -57,10 +56,8 @@ def fetch_scmp_bs4(r_no, t_date):
             target_table = None
             max_rows = 0
             
-            # 尋找行數最多的表格
             for tbl in tables:
                 rows = tbl.find_all('tr')
-                # 排位表通常在 8-18 行之間
                 if len(rows) >= 8 and len(rows) <= 20:
                     if len(rows) > max_rows:
                         max_rows = len(rows)
@@ -72,19 +69,14 @@ def fetch_scmp_bs4(r_no, t_date):
                 rows = target_table.find_all('tr')
                 res = []
                 
-                # 掃描每一行
                 for r_idx, row in enumerate(rows):
                     cells = row.find_all(['td', 'th'])
-                    # 提取純文字
                     row_data = [c.get_text(strip=True) for c in cells]
                     
-                    if not row_ continue
+                    # === 修正點：這裡原本寫錯了 ===
+                    if not row_data:
+                        continue
                     
-                    # 判斷這行是不是馬匹數據行
-                    # 條件：必須包含一個可能是馬號的數字 (1-14)，且長度足夠
-                    # 或包含騎師/練馬師關鍵字
-                    
-                    # 嘗試識別各個欄位
                     h_no = 0
                     h_name = "未知"
                     jock = "未知"
@@ -94,43 +86,41 @@ def fetch_scmp_bs4(r_no, t_date):
                     is_valid_row = False
                     
                     for i, txt in enumerate(row_data):
-                        # 1. 找馬號 (通常在第0或1格，純數字)
+                        # 1. 馬號
                         if h_no == 0 and re.match(r'^\d+$', txt):
                             val = int(txt)
-                            if 1 <= val <= 24: # 合理馬號範圍
+                            if 1 <= val <= 24:
                                 h_no = val
                                 is_valid_row = True
                         
-                        # 2. 找騎師
+                        # 2. 騎師
                         if jock == "未知" and any(k in txt for k in JOCKEY_KEYWORDS):
                             jock = txt
                             is_valid_row = True
                             
-                        # 3. 找練馬師
+                        # 3. 練馬師
                         if trn == "未知" and any(k in txt for k in TRAINER_KEYWORDS):
                             trn = txt
                             is_valid_row = True
                             
-                        # 4. 找馬名 (全大寫英文，排除 LAST RUNS 這種標題)
+                        # 4. 馬名 (排除 LAST RUNS 等標題)
                         if h_name == "未知" and re.match(r'^[A-Z\s\']+$', txt) and len(txt) > 3:
                             if "LAST RUNS" not in txt and "HORSE" not in txt and "JOCKEY" not in txt:
-                                # 排除騎師練馬師名字
                                 if not any(k.upper() in txt for k in JOCKEY_KEYWORDS + TRAINER_KEYWORDS):
                                     h_name = txt
                                     is_valid_row = True
                                     
-                        # 5. 找賠率 (小數點)
+                        # 5. 賠率
                         if odds == 0.0 and re.match(r'^\d+\.\d+$', txt):
                             try:
                                 v = float(txt)
-                                if 1.0 < v < 200.0: # 合理賠率範圍
+                                if 1.0 < v < 200.0:
                                     odds = v
                             except: pass
 
-                    # 特殊處理：黏連修復 (例如 "1PERFECT PAIRING")
-                    # 如果找不到馬號，檢查第一個有內容的格子
+                    # 黏連修復
                     if h_no == 0:
-                        for txt in row_
+                        for txt in row_data:
                             if txt:
                                 m = re.match(r'^(\d+)([A-Z\s]+)$', txt)
                                 if m:
@@ -140,9 +130,7 @@ def fetch_scmp_bs4(r_no, t_date):
                                     break
 
                     if is_valid_row and h_no > 0:
-                        # 清理數據
                         jock = re.sub(r'\s*\(.*?\)', '', jock)
-                        
                         res.append({
                             "馬號": h_no,
                             "馬名": h_name,
@@ -153,16 +141,12 @@ def fetch_scmp_bs4(r_no, t_date):
                 
                 if res:
                     logs.append(f"成功提取 {len(res)} 匹馬")
-                    # 預覽第一匹
-                    logs.append(f"First: {res[0]}")
                     return pd.DataFrame(res), "\n".join(logs)
                 else:
-                    logs.append("雖然找到表格，但無法識別任何馬匹數據 (HTML 結構可能變異)")
-                    # Debug: 印出第一行的 raw text
+                    logs.append("雖然找到表格，但無法識別任何馬匹數據")
                     if len(rows) > 1:
                          first_row_cells = rows[1].find_all(['td', 'th'])
                          logs.append(f"Row 1 Raw: {[c.get_text(strip=True) for c in first_row_cells]}")
-
             else:
                 logs.append("找不到符合行數條件的表格")
                 
@@ -187,11 +171,10 @@ def fetch_data(r_no, t_date):
     full_log += log + "\n"
     
     if df is not None and not df.empty:
-        # 賠率補救：如果 SCMP 沒抓到賠率 (全0)，試試 HKJC
+        # 賠率補救
         if df["現價"].sum() == 0:
             full_log += "SCMP 賠率缺失，嘗試 HKJC 正則補位...\n"
             try:
-                # 這裡重用之前的 HKJC regex 邏輯，但放在這裡避免代碼太長
                 url = "https://bet.hkjc.com/racing/jsonData.aspx"
                 params = {"type": "winodds", "date": datetime.now(HKT).strftime("%Y-%m-%d"), "venue": "HV", "start": r_no, "end": r_no}
                 resp = requests.get(url, params=params, headers=HEADERS, timeout=4)
