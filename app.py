@@ -10,17 +10,20 @@ from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.6"  # 更新：新增日期選擇功能 (解決預售賠率看不到的問題)
+APP_VERSION = "V1.7"  # 更新：增強 API 容錯，解決「非 JSON」格式錯誤
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
+# 更新 Headers，模擬真實瀏覽器以避免被擋
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Origin": "https://bet.hkjc.com",
-    "Referer": "https://bet.hkjc.com/",
-    "Content-Type": "application/json"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
+    "Referer": "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=en",
+    "X-Requested-With": "XMLHttpRequest",
+    "Connection": "keep-alive"
 }
 
 @st.cache_resource
@@ -49,73 +52,76 @@ TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.
 
 # ===================== 1. 核心 API =====================
 def fetch_hkjc_data(race_no, target_date):
-    # 使用使用者選擇的日期，轉為 YYYY-MM-DD
     date_str = target_date.strftime("%Y-%m-%d")
     url = "https://bet.hkjc.com/racing/getJSON.aspx"
     
-    # 先嘗試 ST (沙田)
-    params = {"type": "winodds", "date": date_str, "venue": "ST", "start": race_no, "end": race_no}
-    try:
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=5)
-    except:
-        return None, "網絡連線失敗"
-
-    # 檢查是否需要切換到 HV (跑馬地)
-    use_hv = False
-    if resp.status_code != 200:
-        use_hv = True
-    else:
-        txt = resp.text
-        # 如果回應中沒有 "OUT" 標籤，通常代表該場地無數據
-        if "OUT" not in txt:
-            use_hv = True
-            
-    if use_hv:
-        params["venue"] = "HV"
-        try:
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=5)
-        except:
-            return None, "網絡連線失敗 (HV)"
-            
-    if resp.status_code != 200:
-        return None, f"伺服器錯誤 (HTTP {resp.status_code})"
-
-    # 解析 JSON
-    data = None
-    try:
-        data = resp.json()
-    except:
-        # 有時候回傳的不是標準 JSON，需容錯
-        return None, "數據格式錯誤 (非 JSON)"
-
-    if data is None:
-        return None, "數據為空"
-
-    raw_str = data.get("OUT")
-    if not raw_str:
-        return None, f"無賠率數據 (日期: {date_str}, OUT 缺失)"
-        
-    odds_list = []
-    parts = raw_str.split(";")
-    for p in parts:
-        if "=" in p:
-            kv = p.split("=")
-            if len(kv) == 2:
-                k, v = kv
-                if k.isdigit():
-                    try:
-                        val = float(v)
-                        # 排除無效賠率 (如 999 等特殊代碼)
-                        if val < 900:
-                            odds_list.append({"馬號": int(k), "現價": val})
-                    except: pass
+    # 定義要嘗試的場地列表
+    venues = ["ST", "HV"]
     
-    if odds_list:
-        df = pd.DataFrame(odds_list)
-        df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
-        return df, None
+    last_error = ""
+    
+    for venue in venues:
+        params = {
+            "type": "winodds", 
+            "date": date_str, 
+            "venue": venue, 
+            "start": race_no, 
+            "end": race_no
+        }
         
-    return None, "無有效賠率"
+        try:
+            resp = requests.get(url, params=params, headers=HEADERS, timeout=8)
+            
+            # 檢查 HTTP 狀態碼
+            if resp.status_code != 200:
+                last_error = f"HTTP {resp.status_code}"
+                continue # 嘗試下一個場地
+            
+            # 檢查回傳內容是否為 HTML (錯誤頁面通常是 HTML)
+            if "<html" in resp.text.lower() or "<!doctype" in resp.text.lower():
+                last_error = "回傳了 HTML 錯誤頁面 (可能場地不對)"
+                continue
+                
+            # 嘗試解析 JSON
+            try:
+                data = resp.json()
+            except ValueError:
+                last_error = "JSON 解析失敗"
+                continue
+                
+            # 檢查 OUT 欄位
+            raw_str = data.get("OUT")
+            if not raw_str:
+                last_error = "JSON 中無 OUT 數據"
+                continue # 可能是場地不對，繼續試
+                
+            # 解析成功，處理數據
+            odds_list = []
+            parts = raw_str.split(";")
+            for p in parts:
+                if "=" in p:
+                    kv = p.split("=")
+                    if len(kv) == 2:
+                        k, v = kv
+                        if k.isdigit():
+                            try:
+                                val = float(v)
+                                if val < 900: # 排除無效賠率
+                                    odds_list.append({"馬號": int(k), "現價": val})
+                            except: pass
+            
+            if odds_list:
+                df = pd.DataFrame(odds_list)
+                df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
+                return df, None # 成功返回
+            else:
+                last_error = "解析後無有效賠率數據"
+                
+        except requests.exceptions.RequestException as e:
+            last_error = f"網絡錯誤: {str(e)}"
+            continue
+
+    return None, f"更新失敗: {last_error} (已嘗試 ST/HV, 日期: {date_str})"
 
 # 模擬數據生成 (Demo Mode)
 def generate_demo_data():
@@ -304,15 +310,14 @@ with st.sidebar:
     
     if app_mode == "📡 實時 (Live)":
         st.divider()
-        # [V1.6 新增] 日期選擇
-        st.markdown("*賽事日期*")
+        st.markdown("**賽事日期**")
         sel_date = st.date_input(
             "賽事日期", 
             value=datetime.now(HKT).date(),
             label_visibility="collapsed"
         )
         
-        st.markdown("*選擇場次*")
+        st.markdown("**選擇場次**")
         sel_race = st.radio(
             "選擇場次", 
             options=list(range(1, 15)), 
@@ -342,7 +347,6 @@ if app_mode == "📡 實時 (Live)":
                 err = None
                 time.sleep(0.5)
             else:
-                # [V1.6] 傳入選擇的日期
                 df_new, err = fetch_hkjc_data(sel_race, sel_date)
             
             if df_new is not None:
@@ -367,8 +371,7 @@ if app_mode == "📡 實時 (Live)":
                 st.rerun()
             else:
                 st.error(f"更新失敗：{err}")
-                # 提示文字
-                st.markdown('<p style="color:black; font-size:14px;">提示：如數據為空，請檢查「賽事日期」是否正確（預售賽事請選明日）。</p>', unsafe_allow_html=True)
+                st.markdown('<p style="color:black; font-size:14px;">提示：請檢查日期是否正確（預售選明日）。若仍失敗，可能是 API 暫時被封鎖，請稍後再試。</p>', unsafe_allow_html=True)
     
     with c2:
         st.info(f"賽事 {sel_race} | 上次更新: {curr['last_update']}")
@@ -403,7 +406,7 @@ if app_mode == "📡 實時 (Live)":
             
             picks = df[df["得分"] >= threshold]
             if not picks.empty:
-                st.markdown(f"*🔥 重點推薦 (>{threshold})*")
+                st.markdown(f"**🔥 重點推薦 (>{threshold})**")
                 cols = st.columns(min(3, len(picks)))
                 for i, col in enumerate(cols):
                     if i < len(picks):
@@ -433,7 +436,7 @@ if app_mode == "📡 實時 (Live)":
     else:
         st.info("⚠️ 暫無數據")
         if 'use_demo' in locals() and not use_demo:
-            st.markdown('<p style="color:black; font-size:14px;">提示：如已有賠率但無法顯示，請在 Sidebar 檢查日期是否設定為「賽事當日」。</p>', unsafe_allow_html=True)
+            st.markdown('<p style="color:black; font-size:14px;">提示：若無數據，請開啟 Sidebar 測試模式，或確認日期是否正確。</p>', unsafe_allow_html=True)
 
 elif app_mode == "📜 歷史 (History)":
     h_db = load_history_data()
