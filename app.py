@@ -6,19 +6,18 @@ import os
 import requests
 import time
 import random
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
-import lxml
-import html5lib
 
-# ===================== 版本 V1.17 (HTML 結構診斷) =====================
-APP_VERSION = "V1.17 (Debug Structure)"
+# ===================== 版本 V1.18 (XML 靜態流) =====================
+APP_VERSION = "V1.18 (XML)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept": "application/xml,text/xml,text/html,*/*",
 }
 
 @st.cache_resource
@@ -39,49 +38,74 @@ race_storage = get_storage()
 JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8.5, 'J Moreira': 6.5, '莫雷拉': 6.5, 'H Bowman': 4.8, '布文': 4.8, 'C Y Ho': 4.2, '何澤堯': 4.2, 'L Ferraris': 3.8, '霍宏聲': 3.8, 'K Teetan': 2.8, '田泰安': 2.8}
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
-def fetch_debug_structure(r_no, t_date):
-    date_str = t_date.strftime("%Y/%m/%d")
-    url = "https://racing.hkjc.com/racing/information/Chinese/Racing/Local/Odds.aspx"
-    venues = ["HV", "ST"]
+def fetch_xml_odds(r_no):
+    # 這是馬會的公開 XML 數據源，通常包含當前開售賽事
+    # 網址通常固定，不需要日期參數
+    url = "https://info.hkjc.com/racing/xml/odds/win/win_eng.xml"
     
     logs = []
+    logs.append(f"正在請求 XML: {url}")
     
-    s = requests.Session()
-    
-    for ven in venues:
-        logs.append(f"=== 嘗試場地: {ven}, 日期: {date_str}, 場次: {r_no} ===")
-        params = {"RaceDate": date_str, "Racecourse": ven, "RaceNo": r_no}
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        logs.append(f"HTTP 狀態: {resp.status_code}")
         
-        try:
-            resp = s.get(url, params=params, headers=HEADERS, timeout=10)
-            logs.append(f"HTTP 狀態: {resp.status_code}")
-            
-            if resp.status_code == 200:
-                t_match = re.search(r'<title>(.*?)</title>', resp.text)
-                if t_match:
-                    logs.append(f"網頁標題: {t_match.group(1)}")
+        if resp.status_code == 200:
+            # 解析 XML
+            try:
+                root = ET.fromstring(resp.content)
+                logs.append("XML 解析成功")
                 
-                try:
-                    dfs = pd.read_html(resp.content, flavor='html5lib')
-                    logs.append(f"找到 {len(dfs)} 個表格")
-                    
-                    for i, df in enumerate(dfs):
-                        cols = list(df.columns)
-                        cols_str = str(cols)[:100]
-                        logs.append(f"表格 #{i+1} 欄位: {cols_str}")
+                # XML 結構通常是: <WIN><MEETING><RACE id="1"><HORSE no="1" odds="2.5" .../>
+                # 尋找對應場次
+                race_node = None
+                for race in root.findall(".//RACE"):
+                    if race.get("no") == str(r_no) or race.get("id") == str(r_no):
+                        race_node = race
+                        break
+                
+                if race_node:
+                    logs.append(f"找到第 {r_no} 場數據")
+                    res = []
+                    for horse in race_node.findall("HORSE"):
+                        h_no = horse.get("no")
+                        # 賠率可能在 'odds' 屬性或 text 中
+                        h_odds = horse.get("odds")
                         
-                        if not df.empty:
-                            first_row = str(df.iloc[0].values)[:100]
-                            logs.append(f"表格 #{i+1} 第一行: {first_row}")
-                            
-                except Exception as e:
-                    logs.append(f"Pandas 解析失敗: {str(e)}")
-                    logs.append(f"HTML Preview: {resp.text[:500]}")
-            
-        except Exception as e:
-            logs.append(f"請求錯誤: {str(e)}")
-            
+                        if h_no and h_odds:
+                            try:
+                                val = float(h_odds)
+                                if val < 900: # 排除 SCR (999)
+                                    res.append({
+                                        "馬號": int(h_no),
+                                        "現價": val
+                                    })
+                            except: pass
+                    
+                    if res:
+                        df = pd.DataFrame(res)
+                        df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
+                        return df, "\n".join(logs)
+                    else:
+                        logs.append("該場次無馬匹數據 (可能未開售)")
+                else:
+                    logs.append(f"XML 中找不到第 {r_no} 場 (可能場次未開)")
+                    
+            except ET.ParseError as e:
+                logs.append(f"XML 格式錯誤: {e}")
+                logs.append(f"內容預覽: {resp.text[:200]}")
+        else:
+            logs.append("無法下載 XML")
+
+    except Exception as e:
+        logs.append(f"連線錯誤: {str(e)}")
+        
     return None, "\n".join(logs)
+
+def fetch_data(r_no, t_date):
+    # 直接使用 XML 策略，忽略日期 (因為 XML 永遠是最新)
+    df, log = fetch_xml_odds(r_no)
+    return df, log
 def gen_demo():
     rows = []
     for i in range(1, 13):
@@ -189,7 +213,8 @@ with st.sidebar:
     
     if app_mode == "📡 實時":
         st.divider()
-        sel_date = st.date_input("日期", value=datetime.now(HKT).date())
+        # XML 不需要日期，但保留介面讓用戶不會覺得奇怪
+        sel_date = st.date_input("日期 (XML自動獲取最新)", value=datetime.now(HKT).date())
         sel_race = st.radio("場次", list(range(1, 15)), format_func=lambda x: f"賽事 {x}", horizontal=True)
         st_autorefresh(interval=30000, key="auto_refresh")
         st.divider()
@@ -204,23 +229,123 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 執行診斷", type="primary", use_container_width=True):
+        if st.button("🔄 更新賠率 (XML)", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
                 log = "Demo"
                 time.sleep(0.5)
             else:
-                df_new, log = fetch_debug_structure(sel_race, sel_date)
+                df_new, log = fetch_data(sel_race, sel_date)
             
             curr["debug_info"] = log
-            st.error("診斷完成，請查看右側日誌")
+            
+            if df_new is not None:
+                if not curr["current_df"].empty:
+                    old = curr["current_df"]
+                    if "騎師" in old.columns:
+                        info_cols = old[["馬號", "騎師", "練馬師"]]
+                        df_new = df_new.merge(info_cols, on="馬號", how="left").fillna("未知")
+                    last = curr["current_df"][["馬號", "現價"]].rename(columns={"現價": "上回"})
+                    df_new = df_new.merge(last, on="馬號", how="left")
+                    df_new["上回"] = df_new["上回"].fillna(df_new["現價"])
+                    df_new["走勢"] = ((df_new["上回"] - df_new["現價"]) / df_new["上回"] * 100).fillna(0).round(1)
+                else: df_new["走勢"] = 0.0
+                curr["current_df"] = df_new
+                curr["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
+                st.success("已更新")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("更新失敗，請看日誌")
     
     with c2: 
         st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-        with st.expander("📝 結構診斷 (Debug Structure)", expanded=True):
+        with st.expander("📝 系統日誌 (XML Log)", expanded=True):
             st.code(curr["debug_info"])
 
+    with st.expander("🛠️ 排位資料"):
+        txt_input = st.text_area("貼上排位表", value=curr["raw_info_text"], height=100)
+        if st.button("合併資料"):
+            info_df = parse_info(txt_input)
+            if not info_df.empty and not curr["current_df"].empty:
+                main_df = curr["current_df"]
+                if "騎師" in main_df.columns: main_df = main_df.drop(columns=["騎師", "練馬師"])
+                main_df = main_df.merge(info_df, on="馬號", how="left").fillna("未知")
+                curr["current_df"] = main_df
+                curr["raw_info_text"] = txt_input
+                st.success("OK")
+                st.rerun()
+
     if not curr["current_df"].empty:
-        pass
+        df = curr["current_df"]
+        df["得分"] = df.apply(get_score, axis=1)
+        df["級別"] = df["得分"].apply(get_lvl)
+        df = df.sort_values(["得分", "現價"], ascending=[False, True]).reset_index(drop=True)
+        
+        tab1, tab2 = st.tabs(["📋 卡片", "📑 列表"])
+        with tab1:
+            best = df.iloc[0]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("最高分", f"#{best['馬號']} ({best['得分']})")
+            m2.metric("平均", round(df["得分"].mean(), 1))
+            m3.metric("落飛", int((df["走勢"] > 0).sum()))
+            
+            picks = df[df["得分"] >= threshold]
+            if not picks.empty:
+                st.markdown(f"**🔥 推薦 (>{threshold})**")
+                cols = st.columns(min(3, len(picks)))
+                for i, col in enumerate(cols):
+                    if i < len(picks):
+                        r = picks.iloc[i]
+                        trend = r['走勢']
+                        tag_c = "tag-drop" if trend > 0 else "tag-rise"
+                        txt = f"落 {trend}%" if trend > 0 else f"回 {abs(trend)}%"
+                        if trend == 0: txt = "-"
+                        with col:
+                            st.markdown(f"""
+                            <div class="horse-card top-pick-card">
+                                <div style="display:flex; justify-content:space-between">
+                                    <b style="color:#000;">#{r['馬號']} {r.get('馬名','')}</b>
+                                    <span class="tag tag-lvl">{r['級別']}級</span>
+                                </div>
+                                <div style="font-size:20px; font-weight:bold; margin:8px 0; color:#000;">
+                                    {r['現價']} <span style="color:#c62828; float:right">{r['得分']}</span>
+                                </div>
+                                <div class="tag {tag_c}">{txt}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+            else: st.info("無推薦")
+
+        with tab2: st.dataframe(df, use_container_width=True)
     else:
-        st.info("請點擊左側「執行診斷」查看 HTML 結構")
+        st.info("暫無數據")
+
+elif app_mode == "📜 歷史":
+    h_db = load_hist()
+    if h_db:
+        dates = sorted(h_db.keys(), reverse=True)
+        sel_d = st.selectbox("日期", dates)
+        if sel_d:
+            races = sorted([int(x) for x in h_db[sel_d].keys()])
+            sel_r = st.radio("場次", races, format_func=lambda x: f"賽事 {x}", horizontal=True)
+            if sel_r:
+                raw = h_db[sel_d][str(sel_r)]["odds"]
+                hist_df = pd.DataFrame(raw)
+                hist_df["得分"] = hist_df.apply(get_score, axis=1)
+                hist_df["級別"] = hist_df["得分"].apply(get_lvl)
+                st.dataframe(hist_df.sort_values("得分", ascending=False), use_container_width=True)
+    else: st.info("無存檔")
+
+elif app_mode == "📈 總覽":
+    h_db = load_hist()
+    today = datetime.now(HKT).strftime("%Y-%m-%d")
+    if today in h_db:
+        res = []
+        for rid, val in h_db[today].items():
+            tmp = pd.DataFrame(val["odds"])
+            if not tmp.empty:
+                tmp["得分"] = tmp.apply(get_score, axis=1)
+                best = tmp.sort_values("得分", ascending=False).iloc[0]
+                res.append({"場次": int(rid), "首選": f"#{best['馬號']} ({best['得分']})", "賠率": best['現價']})
+        if res: st.table(pd.DataFrame(res).sort_values("場次"))
+    else: st.info("無今日數據")
