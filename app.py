@@ -4,13 +4,14 @@ import numpy as np
 import re
 from datetime import datetime
 
-# ===================== V1.70 (Vertical Stream Odds Fix) =====================
-# 修復重點：針對用戶提供的「垂直分佈」賠率格式進行解析。
-# 邏輯：馬號、馬名、獨贏賠率、位置賠率 分布在不同行，程式改為「流式讀取」。
+# ===================== V1.71 (Absolute Row Indexing Fix) =====================
+# 修復重點：解決整數賠率 (e.g. 11, 22) 被漏抓，導致錯抓位置賠率的問題。
+# 新邏輯：不依賴小數點特徵，改用「相對行數位置」鎖定。
+# 規則：馬號出現後的「第二個非空行」即為獨贏賠率。
 
-st.set_page_config(page_title="賽馬智腦 V1.70", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.71", layout="wide")
 
-# --- 核心數據 (2024/25) ---
+# --- 核心數據 (不變) ---
 REAL_STATS = {
     "jockey": { "Z Purton": 22.9, "J McDonald": 21.3, "M Barzalona": 16.7, "J Moreira": 16.1, "C Williams": 14.8, "H Bowman": 14.5, "K Teetan": 12.0, "C Y Ho": 11.5, "A Badel": 8.5, "A Atzeni": 8.2, "L Hewitson": 7.8, "B Avdulla": 7.5, "Y L Chung": 7.2, "C L Chau": 6.8, "K C Leung": 5.5, "M F Poon": 5.2, "H Bentley": 9.5, "L Ferraris": 8.0, "M Chadwick": 6.5, "A Hamelin": 4.5 },
     "trainer": { "J Size": 11.0, "K L Man": 10.9, "K W Lui": 10.0, "D Eustace": 9.8, "C Fownes": 9.7, "P C Ng": 9.5, "F C Lor": 9.2, "D A Hayes": 8.8, "A S Cruz": 8.5, "C S Shum": 8.3, "P F Yiu": 8.0, "D J Hall": 7.8, "M Newnham": 7.5, "W K Mo": 7.2, "J Richards": 6.5, "W Y So": 6.2, "T P Yung": 5.5, "Y S Tsui": 4.5, "C H Yip": 4.0, "C W Chang": 3.5 }
@@ -41,7 +42,7 @@ def calculate_ai_score(row):
     
     return score
 
-# --- 排位解析器 (V1.68 特訓版) ---
+# --- 排位解析器 (維持 V1.68) ---
 def parse_trained_card(text):
     data = []
     lines = text.strip().split('\n')
@@ -57,7 +58,6 @@ def parse_trained_card(text):
             while idx_name < len(parts) and not parts[idx_name].strip(): idx_name += 1
             row['馬名'] = parts[idx_name]
             
-            # 尋找負磅 (100-135)
             idx_wt = idx_name + 1
             while idx_wt < len(parts):
                 if parts[idx_wt].isdigit() and 100 <= int(parts[idx_wt]) <= 135:
@@ -65,83 +65,73 @@ def parse_trained_card(text):
                     break
                 idx_wt += 1
             
-            # 尋找騎師
-            if idx_wt + 1 < len(parts):
-                jockey_part = parts[idx_wt + 1]
-                if len(parts) > idx_wt + 2 and "(-" in parts[idx_wt + 2]:
-                    jockey_part += " " + parts[idx_wt + 2]
-                    idx_draw = idx_wt + 3
-                else:
-                    idx_draw = idx_wt + 2
-                row['騎師'] = jockey_part
-                
-                # 尋找檔位
-                if len(parts) > idx_draw and parts[idx_draw].isdigit():
-                    row['檔位'] = int(parts[idx_draw])
-                if len(parts) > idx_draw + 1:
-                    row['練馬師'] = parts[idx_draw + 1]
+            jockey_part = parts[idx_wt + 1]
+            if len(parts) > idx_wt + 2 and "(-" in parts[idx_wt + 2]:
+                jockey_part += " " + parts[idx_wt + 2]
+                idx_draw = idx_wt + 3
+            else:
+                idx_draw = idx_wt + 2
+            row['騎師'] = jockey_part
+            if len(parts) > idx_draw and parts[idx_draw].isdigit():
+                row['檔位'] = int(parts[idx_draw])
+            if len(parts) > idx_draw + 1:
+                row['練馬師'] = parts[idx_draw + 1]
             
             data.append(row)
         except: continue
     return pd.DataFrame(data)
 
-# --- [新] 垂直流賠率解析器 (Vertical Stream Parser) ---
-def parse_odds_vertical_stream(text):
+# --- [修正] 絕對行數索引賠率解析器 ---
+def parse_odds_strict_sequence(text):
     """
-    針對用戶提供的多行數據格式：
-    1
-    幸運同行 ...
-    6.2
-    2.4
+    針對格式：
+    Line 1: 馬號 (1)
+    Line 2: 馬名資訊...
+    Line 3: 獨贏 (6.2)  <-- 抓這個
+    Line 4: 位置 (2.4)
+    Line 5: 馬號 (2)
+    ...
     """
     odds_map = {}
     
-    # 將所有文字打散成單字 (Tokens)
-    tokens = text.split()
+    # 1. 將文字按行分割，並去除空行
+    raw_lines = text.split('\n')
+    lines = [line.strip() for line in raw_lines if line.strip()]
     
-    current_horse = None
     i = 0
-    
-    while i < len(tokens):
-        token = tokens[i]
+    while i < len(lines):
+        line = lines[i]
         
-        # 1. 檢測是否為馬號 (1-14)
-        if token.isdigit() and 1 <= int(token) <= 14:
-            # 必須確認這不是檔位或體重
-            # 在這種垂直格式中，馬號通常是孤立的，或者後面跟著中文
-            # 我們假設它是新的一匹馬開始
-            potential_horse = int(token)
+        # 檢測是否為馬號 (1-14 的純數字)
+        if line.isdigit() and 1 <= int(line) <= 14:
+            current_horse = int(line)
             
-            # 只有當我們還沒找到上一匹馬的賠率，或者這是明顯的新區塊時切換
-            # 簡單策略：只要看到 1-14，就暫定為當前馬號，等待賠率出現
-            current_horse = potential_horse
-            i += 1
-            continue
+            # 根據您的格式，馬號下面是資訊，再下面才是獨贏
+            # Index i = 馬號
+            # Index i+1 = 馬名資訊
+            # Index i+2 = 獨贏 <--- 目標
             
-        # 2. 檢測是否為賠率 (浮點數)
-        # 條件：必須有當前馬號，且還沒填過賠率
-        try:
-            val = float(token)
-            
-            # 過濾條件：
-            # - 不是整數 (因為整數可能是檔位或體重)，除非它很小且有小數點 (6.0)
-            # - 用戶提供的賠率有小數點 (6.2, 2.4)
-            # - 賠率通常小於 100 (排除體重)
-            
-            if current_horse is not None and '.' in token and val < 100:
-                if current_horse not in odds_map:
-                    # 找到的第一個小數點數字 = 獨贏
-                    odds_map[current_horse] = val
-                    # 找到獨贏後，current_horse 任務完成，避免誤把位置賠率(2.4)當作下一匹馬的獨贏
-                    # 但不重置 current_horse，因為可能下一行才是下一匹馬
-                else:
-                    # 如果已經有獨贏，那這個可能是位置賠率，我們忽略
+            if i + 2 < len(lines):
+                win_line = lines[i+2]
+                
+                # 嘗試提取賠率 (支援整數和小數)
+                try:
+                    # 有時候賠率可能會帶有其他字元，嘗試提取第一個數字
+                    nums = re.findall(r'\d+\.\d+|\d+', win_line)
+                    if nums:
+                        val = float(nums[0])
+                        # 簡單過濾：獨贏通常不會超過 500
+                        if val < 500:
+                            odds_map[current_horse] = val
+                except:
                     pass
-        except:
-            pass
             
-        i += 1
-        
+            # 跳過這匹馬的區塊，尋找下一個馬號
+            # 因為一個區塊至少有 4 行 (號, 名, 贏, 位)，所以我們可以安全地跳過幾行加速
+            i += 2 
+        else:
+            i += 1
+            
     return odds_map
 
 # --- Session ---
@@ -151,7 +141,7 @@ if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'
 if 'race_info' not in st.session_state: st.session_state['race_info'] = {"date": datetime.now().strftime("%Y-%m-%d"), "no": 1}
 
 # ===================== UI =====================
-st.sidebar.title("🏇 賽馬智腦 V1.70")
+st.sidebar.title("🏇 賽馬智腦 V1.71")
 page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
 
 if page == "🔒 後台管理":
@@ -165,28 +155,29 @@ if page == "🔒 後台管理":
         st.subheader("1. 賽事設定")
         c_d, c_r = st.columns(2)
         with c_d: 
-            prev_d = datetime.strptime(st.session_state['race_info']['date'], "%Y-%m-%d").date()
-            d_in = st.date_input("日期", value=prev_d)
-        with c_r: r_in = st.number_input("場次", 1, 14, st.session_state['race_info']['no'])
-        
+            d_val = datetime.strptime(st.session_state['race_info']['date'], "%Y-%m-%d").date()
+            input_date = st.date_input("日期", value=d_val)
+        with c_r: 
+            input_race = st.number_input("場次", 1, 14, st.session_state['race_info']['no'])
+            
         st.divider()
         st.subheader("2. 資料輸入")
         
         c1, c2 = st.columns(2)
         with c1: 
             st.info("排位表 (特訓格式)")
-            card_in = st.text_area("排位文字", height=300, help="馬號 綵衣 馬名 烙號 負磅...")
+            card_in = st.text_area("排位文字", height=300)
         with c2: 
-            st.info("賠率 (垂直流格式)")
-            st.caption("支援多行格式：\n1\n幸運同行...\n6.2\n...")
+            st.info("賠率 (嚴格順序格式)")
+            st.caption("請確保順序：馬號 -> 資訊 -> 獨贏 -> 位置")
             odds_in = st.text_area("賠率文字", height=300)
             
         if st.button("🚀 發布並更新", type="primary"):
             df = parse_trained_card(card_in)
             if not df.empty:
                 if odds_in:
-                    # 使用新的垂直解析器
-                    odds_map = parse_odds_vertical_stream(odds_in)
+                    # 使用新的嚴格順序解析器
+                    odds_map = parse_odds_strict_sequence(odds_in)
                     df['獨贏'] = df['馬號'].map(odds_map).fillna("-")
                 else: df['獨贏'] = "-"
                 
@@ -197,9 +188,15 @@ if page == "🔒 後台管理":
                 df['勝率%'] = (df['AI分數']/total*100).round(1) if total>0 else 0.0
                 
                 st.session_state['race_data'] = df
-                st.session_state['race_info'] = {"date": str(d_in), "no": r_in}
+                st.session_state['race_info'] = {"date": str(input_date), "no": input_race}
                 st.session_state['last_update'] = pd.Timestamp.now().strftime("%H:%M:%S")
-                st.success(f"更新成功！已載入 {len(df)} 匹馬，並解析了 {len(odds_map) if odds_in else 0} 筆賠率。")
+                
+                st.success(f"已發布！共 {len(df)} 匹馬，解析到 {len(odds_map) if odds_in else 0} 筆賠率。")
+                
+                # Debug 顯示解析到的賠率，讓您確認
+                if odds_in:
+                    st.write("解析到的賠率預覽:", odds_map)
+                    
             else: st.error("排位表解析失敗")
 
 else:
@@ -220,11 +217,9 @@ else:
         
         st.divider()
         
-        # 確保顯示獨贏
-        show_cols = [c for c in ['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅'] if c in df.columns]
-        
+        display_cols = [c for c in ['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅'] if c in df.columns]
         st.dataframe(
-            df[show_cols],
+            df[display_cols],
             column_config={
                 "勝率%": st.column_config.ProgressColumn("AI 勝率", format="%.1f%%", min_value=0, max_value=100),
                 "獨贏": st.column_config.TextColumn("獨贏賠率"),
