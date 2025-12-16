@@ -9,8 +9,8 @@ import random
 from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
-# ===================== 版本 V1.21 (SCMP 救援版) =====================
-APP_VERSION = "V1.21 (SCMP Backup)"
+# ===================== 版本 V1.22 (SCMP 寬鬆匹配) =====================
+APP_VERSION = "V1.22 (SCMP Enhanced)"
 HISTORY_FILE = "race_history.json"
 HKT = timezone(timedelta(hours=8))
 
@@ -38,160 +38,153 @@ JOCKEY_RANK = {'Z Purton': 9.2, '潘頓': 9.2, 'J McDonald': 8.5, '麥道朗': 8
 TRAINER_RANK = {'J Size': 4.4, '蔡約翰': 4.4, 'K W Lui': 4.0, '呂健威': 4.0, 'P C Ng': 2.5, '伍鵬志': 2.5, 'D J Whyte': 2.5, '韋達': 2.5, 'F C Lor': 3.2, '羅富全': 3.2}
 
 def fetch_scmp_data(r_no, t_date):
-    """嘗試從 SCMP 抓取數據"""
-    # SCMP 網址結構: https://racing.scmp.com/racing/race-card/20251217/race/1
     date_str = t_date.strftime("%Y%m%d")
     url = f"https://racing.scmp.com/racing/race-card/{date_str}/race/{r_no}"
     
     logs = []
-    logs.append(f"嘗試 SCMP: {url}")
+    logs.append(f"SCMP URL: {url}")
     
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
-        logs.append(f"SCMP HTTP: {resp.status_code}")
+        logs.append(f"HTTP: {resp.status_code}")
         
         if resp.status_code == 200:
-            # 嘗試用 Pandas 解析表格
             try:
-                # SCMP 的排位表通常包含 Horse No, Horse Name, Jockey, Trainer, Win Odds
+                # 讓 Pandas 自動解析所有表格
                 dfs = pd.read_html(resp.text)
                 logs.append(f"找到 {len(dfs)} 個表格")
                 
                 target_df = None
-                for df in dfs:
-                    # 檢查關鍵欄位 (SCMP 欄位通常是英文)
+                
+                # 遍歷所有表格，印出欄位名稱以便除錯
+                for i, df in enumerate(dfs):
+                    # 將欄位轉為小寫字串
                     cols = [str(c).lower() for c in df.columns]
-                    if any("horse" in c for c in cols) and any("no" in c for c in cols):
+                    logs.append(f"表格 {i+1} 欄位: {cols}")
+                    
+                    # 寬鬆識別條件：只要包含 'jockey' 或 'trainer' 或 'horse' 其中之一
+                    if any("jockey" in c for c in cols) or any("trainer" in c for c in cols) or any("horse" in c for c in cols):
                         target_df = df
+                        logs.append(f"-> 鎖定表格 {i+1}")
                         break
                 
                 if target_df is not None:
-                    logs.append("成功識別排位表")
-                    # 清理與標準化
-                    # SCMP 欄位映射
+                    # 開始映射欄位
                     target_df.columns = [str(c).strip() for c in target_df.columns]
-                    
-                    # 尋找對應欄位
                     col_map = {}
+                    
+                    # 智能欄位匹配
                     for c in target_df.columns:
                         cl = c.lower()
-                        if "no" in cl and "horse" not in cl: col_map["No"] = c
-                        if "horse" in cl and "no" not in cl: col_map["Horse"] = c
-                        if "jockey" in cl: col_map["Jockey"] = c
-                        if "trainer" in cl: col_map["Trainer"] = c
-                        if "odds" in cl or "win" in cl: col_map["Odds"] = c
-
+                        if "no" in cl and "brand" not in cl: col_map["No"] = c
+                        elif "horse" in cl: col_map["Horse"] = c
+                        elif "jockey" in cl: col_map["Jockey"] = c
+                        elif "trainer" in cl: col_map["Trainer"] = c
+                        elif "win" in cl or "odds" in cl: col_map["Odds"] = c
+                    
                     res = []
                     for _, row in target_df.iterrows():
                         try:
-                            # 獲取馬號
-                            h_no_raw = row.get(col_map.get("No", "No."), 0)
-                            h_no = int(h_no_raw)
-                            
-                            # 獲取基本資料
-                            h_name = row.get(col_map.get("Horse", "Horse"), f"馬匹 {h_no}")
-                            jockey = row.get(col_map.get("Jockey", "Jockey"), "未知")
-                            trainer = row.get(col_map.get("Trainer", "Trainer"), "未知")
-                            
-                            # 獲取賠率 (如果還沒開盤，可能是 '-' 或空)
-                            odds_val = 0.0
-                            if "Odds" in col_map:
-                                odds_raw = str(row.get(col_map["Odds"], 0))
+                            # 1. 處理馬號
+                            h_no = 0
+                            if "No" in col_map:
+                                val = str(row[col_map["No"]])
                                 # 提取數字
-                                m = re.search(r'(\d+\.\d+|\d+)', odds_raw)
-                                if m:
-                                    odds_val = float(m.group(1))
+                                m = re.search(r'\d+', val)
+                                if m: h_no = int(m.group(0))
                             
-                            # 只要有馬號就算成功，賠率可以是 0 (等待開盤)
-                            res.append({
-                                "馬號": h_no,
-                                "馬名": str(h_name),
-                                "騎師": str(jockey),
-                                "練馬師": str(trainer),
-                                "現價": odds_val
-                            })
+                            # 2. 處理賠率
+                            odds = 0.0
+                            if "Odds" in col_map:
+                                val = str(row[col_map["Odds"]])
+                                m = re.search(r'(\d+\.\d+|\d+)', val)
+                                if m: odds = float(m.group(1))
+                            
+                            # 3. 其他資料
+                            name = row.get(col_map.get("Horse"), f"馬匹 {h_no}")
+                            jock = row.get(col_map.get("Jockey"), "未知")
+                            trn = row.get(col_map.get("Trainer"), "未知")
+                            
+                            if h_no > 0:
+                                res.append({
+                                    "馬號": h_no,
+                                    "馬名": str(name),
+                                    "騎師": str(jock),
+                                    "練馬師": str(trn),
+                                    "現價": odds
+                                })
                         except: pass
-                    
+                        
                     if res:
                         return pd.DataFrame(res), "\n".join(logs)
                     else:
-                        logs.append("表格解析後無有效數據")
+                        logs.append("雖然找到表格，但無法提取有效行數據")
                 else:
-                    logs.append("未找到符合結構的排位表")
+                    logs.append("沒有表格符合寬鬆條件 (找不到 Jockey/Trainer/Horse 欄位)")
                     
             except Exception as e:
-                logs.append(f"Pandas 解析錯誤: {str(e)}")
+                logs.append(f"解析錯誤: {str(e)}")
         else:
-            logs.append("SCMP 請求失敗")
+            logs.append("請求失敗")
             
     except Exception as e:
-        logs.append(f"SCMP 連線錯誤: {str(e)}")
+        logs.append(f"連線例外: {str(e)}")
         
     return None, "\n".join(logs)
-def fetch_hkjc_fixed(r_no):
-    """修復崩潰 Bug 的馬會 API 嘗試"""
+def fetch_hkjc_fallback(r_no):
+    """最後一道防線：嘗試用 Regex 硬抓 HKJC 頁面上的任何數字對"""
     url = "https://bet.hkjc.com/racing/jsonData.aspx"
     logs = []
     
-    # 嘗試 HV 和 ST
-    for venue in ["HV", "ST"]:
-        try:
-            params = {
-                "type": "winodds",
-                "date": datetime.now(HKT).strftime("%Y-%m-%d"),
-                "venue": venue,
-                "start": r_no, "end": r_no
-            }
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=5)
+    # 有時候這個端點會回傳看起來像 HTML 的東西，但裡面藏著數據
+    try:
+        params = {
+            "type": "winodds",
+            "date": datetime.now(HKT).strftime("%Y-%m-%d"),
+            "venue": "HV", # 預設 HV
+            "start": r_no, "end": r_no
+        }
+        resp = requests.get(url, params=params, headers=HEADERS, timeout=5)
+        
+        # 暴力搜索 pattern: "1=9.9" 或 "1":"9.9"
+        text = resp.text
+        res = []
+        
+        # 模式 A: 1=9.9
+        matches = re.findall(r'\b(\d+)=([\d\.]+)', text)
+        for m in matches:
+            res.append({"馬號": int(m[0]), "現價": float(m[1])})
             
-            if resp.status_code == 200:
-                # 這裡就是之前崩潰的地方，我們加強邏輯
-                try:
-                    # 先試 JSON
-                    data = resp.json()
-                    raw = data.get("OUT", "")
-                except:
-                    # 不是 JSON，假設是純文字
-                    raw = resp.text
-                
-                # 強壯的解析邏輯
-                res = []
-                # 用正則表達式直接抓取 "數字=數字" 的模式
-                # 避免 split("=") 因為 HTML 標籤而崩潰
-                matches = re.findall(r'\b(\d+)=([\d\.]+)', raw)
-                
-                for m in matches:
-                    try:
-                        k, v = int(m[0]), float(m[1])
-                        if v < 900:
-                            res.append({"馬號": k, "現價": v})
-                    except: pass
-                
-                if res:
-                    logs.append(f"HKJC [{venue}] 解析成功")
-                    df = pd.DataFrame(res)
-                    df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
-                    return df, "\n".join(logs)
-                
-        except Exception as e:
-            logs.append(f"HKJC [{venue}] 錯誤: {str(e)}")
+        if not res:
+            # 模式 B: "1":"9.9" (JSON style)
+            matches = re.findall(r'"(\d+)":"([\d\.]+)"', text)
+            for m in matches:
+                res.append({"馬號": int(m[0]), "現價": float(m[1])})
+
+        if res:
+            logs.append("HKJC 暴力搜索成功")
+            df = pd.DataFrame(res)
+            df["馬名"] = df["馬號"].apply(lambda x: f"馬匹 {x}")
+            return df, "HKJC Regex OK"
             
+    except Exception as e:
+        logs.append(f"HKJC Fallback Error: {e}")
+        
     return None, "\n".join(logs)
 
 def fetch_data(r_no, t_date):
     full_log = "=== 開始更新 ===\n"
     
-    # 策略 1: 優先嘗試 SCMP (因為它有排位資料且較少擋 IP)
+    # 1. SCMP
     df, log = fetch_scmp_data(r_no, t_date)
     full_log += log + "\n"
     
     if df is not None and not df.empty:
-        full_log += ">>> 使用 SCMP 數據"
         return df, full_log
     
-    # 策略 2: 如果 SCMP 失敗，嘗試修復後的 HKJC
-    full_log += "--- SCMP 無數據，嘗試 HKJC ---\n"
-    df_jc, log_jc = fetch_hkjc_fixed(r_no)
+    # 2. HKJC Fallback
+    full_log += "--- 嘗試 HKJC Fallback ---\n"
+    df_jc, log_jc = fetch_hkjc_fallback(r_no)
     full_log += log_jc + "\n"
     
     if df_jc is not None:
@@ -199,22 +192,18 @@ def fetch_data(r_no, t_date):
         
     return None, full_log
 
-# 輔助計算函數
+# 評分與其他函數
 def get_score(row):
     s = 0
     o = row.get("現價", 0)
-    # 如果賠率是 0 (未開盤)，不給分
-    if o == 0: return 0
-    
+    if o == 0: return 0 
     if o > 0 and o <= 5.0: s += 25
     elif o > 5.0 and o <= 10.0: s += 10
-    
     tr = row.get("走勢", 0)
     if tr >= 15: s += 50
     elif tr >= 10: s += 35
     elif tr >= 5: s += 20
     elif tr <= -10: s -= 20
-    
     j = str(row.get("騎師", ""))
     t = str(row.get("練馬師", ""))
     for k, v in JOCKEY_RANK.items():
@@ -327,10 +316,10 @@ if app_mode == "📡 實時":
     curr = race_storage[sel_race]
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("🔄 獲取數據 (SCMP/HKJC)", type="primary", use_container_width=True):
+        if st.button("🔄 更新 (SCMP/HKJC)", type="primary", use_container_width=True):
             if 'use_demo' in locals() and use_demo:
                 df_new = gen_demo()
-                log = "Demo Mode"
+                log = "Demo"
                 time.sleep(0.5)
             else:
                 df_new, log = fetch_data(sel_race, sel_date)
@@ -338,9 +327,7 @@ if app_mode == "📡 實時":
             curr["debug_info"] = log
             
             if df_new is not None:
-                # 數據合併邏輯
                 if not curr["current_df"].empty:
-                    # 保留舊的走勢計算
                     last = curr["current_df"][["馬號", "現價"]].rename(columns={"現價": "上回"})
                     df_new = df_new.merge(last, on="馬號", how="left")
                     df_new["上回"] = df_new["上回"].fillna(df_new["現價"])
@@ -350,15 +337,15 @@ if app_mode == "📡 實時":
                 
                 curr["current_df"] = df_new
                 curr["last_update"] = datetime.now(HKT).strftime("%H:%M:%S")
-                st.success("數據更新成功")
+                st.success("成功")
                 time.sleep(0.5)
                 st.rerun()
             else:
-                st.error("所有來源皆失敗，請看日誌")
+                st.error("失敗，請看日誌")
     
     with c2: 
         st.info(f"賽事 {sel_race} | 更新: {curr['last_update']}")
-        with st.expander("📝 執行日誌 (Log)", expanded=True):
+        with st.expander("📝 執行日誌 (Debug Log)", expanded=True):
             st.code(curr["debug_info"])
 
     with st.expander("🛠️ 排位資料"):
@@ -386,11 +373,8 @@ if app_mode == "📡 實時":
             m1, m2, m3 = st.columns(3)
             m1.metric("最高分", f"#{best['馬號']} ({best['得分']})")
             
-            # 只有當賠率不為 0 時才顯示平均分
-            valid_odds = df[df["現價"] > 0]
-            avg_score = round(valid_odds["得分"].mean(), 1) if not valid_odds.empty else 0
-            m2.metric("平均分", avg_score)
-            
+            valid = df[df["現價"] > 0]
+            m2.metric("平均", round(valid["得分"].mean(), 1) if not valid.empty else 0)
             m3.metric("落飛", int((df["走勢"] > 0).sum()))
             
             picks = df[df["得分"] >= threshold]
@@ -405,8 +389,6 @@ if app_mode == "📡 實時":
                         txt = f"落 {trend}%" if trend > 0 else f"回 {abs(trend)}%"
                         if trend == 0: txt = "-"
                         with col:
-                            # 檢查是否未開盤
-                            price_display = r['現價'] if r['現價'] > 0 else "未開盤"
                             st.markdown(f"""
                             <div class="horse-card top-pick-card">
                                 <div style="display:flex; justify-content:space-between">
@@ -414,7 +396,7 @@ if app_mode == "📡 實時":
                                     <span class="tag tag-lvl">{r['級別']}級</span>
                                 </div>
                                 <div style="font-size:20px; font-weight:bold; margin:8px 0; color:#000;">
-                                    {price_display} <span style="color:#c62828; float:right">{r['得分']}</span>
+                                    {r['現價']} <span style="color:#c62828; float:right">{r['得分']}</span>
                                 </div>
                                 <div class="tag {tag_c}">{txt}</div>
                             </div>
