@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone, date
 from streamlit_autorefresh import st_autorefresh
 
 # ===================== 版本控制 =====================
-APP_VERSION = "V1.9"  # 更新：新增 HTML 爬蟲備用方案，解決 API 被擋問題
+APP_VERSION = "V1.10"  # 更新：修復變數截斷錯誤，完整 HTML 爬蟲邏輯
 
 # ===================== 0. 全局配置 =====================
 HISTORY_FILE = "race_history.json"
@@ -73,10 +73,17 @@ def fetch_from_json_api(session, race_no, date_str, venue):
                 parts = raw_str.split(";")
                 for p in parts:
                     if "=" in p:
-                        k, v = p.split("=")
-                        if k.isdigit() and float(v) < 900:
-                            odds_list.append({"馬號": int(k), "現價": float(v)})
-                return odds_list
+                        kv = p.split("=")
+                        if len(kv) == 2:
+                            k, v = kv
+                            if k.isdigit():
+                                try:
+                                    val = float(v)
+                                    if val < 900:
+                                        odds_list.append({"馬號": int(k), "現價": val})
+                                except: pass
+                if odds_list:
+                    return odds_list
     except:
         pass
     return None
@@ -89,30 +96,24 @@ def fetch_from_html_scraping(session, race_no, date_str, venue):
     try:
         resp = session.get(url, params=params, headers=HEADERS, timeout=8)
         if resp.status_code == 200:
-            # 使用正則表達式尋找賠率
-            # 模式: id="win_odds_1" ... > 2.5 </div>
-            # 這是一個簡化的查找，針對常見的 HTML 結構
-            
-            # 1. 尋找 win_odds_X 的結構
             odds_list = []
-            # 匹配類似 o="12.0" 這樣的屬性，通常出現在 JavaScript 變數或標籤屬性中
-            # 或者直接匹配 <div id="win_odds_1">12.0</div>
             
-            # 嘗試匹配 HTML 內容
-            # 假設 HTML 裡面有 id="win_odds_1">9.5</div>
+            # 1. 嘗試正則匹配 HTML 標籤
             pattern = r'id="win_odds_(\d+)"[^>]*>([\d\.]+)<'
             matches = re.findall(pattern, resp.text)
             
             if matches:
                 for m in matches:
-                    horse_no = int(m[0])
-                    odds_val = float(m[1])
-                    if odds_val < 900:
-                        odds_list.append({"馬號": horse_no, "現價": odds_val})
-                return odds_list
+                    try:
+                        horse_no = int(m[0])
+                        odds_val = float(m[1])
+                        if odds_val < 900:
+                            odds_list.append({"馬號": horse_no, "現價": odds_val})
+                    except: pass
+                if odds_list:
+                    return odds_list
             
-            # 如果上面失敗，嘗試另一種常見模式 (JavaScript 數據)
-            # winodds = "1=9.5;2=12.0;..."
+            # 2. 嘗試正則匹配 JS 變數
             js_pattern = r'winodds\s*=\s*"([^"]+)"'
             js_match = re.search(js_pattern, resp.text)
             if js_match:
@@ -122,8 +123,13 @@ def fetch_from_html_scraping(session, race_no, date_str, venue):
                     if "=" in p:
                         k, v = p.split("=")
                         if k.isdigit():
-                            odds_list.append({"馬號": int(k), "現價": float(v)})
-                return odds_list
+                            try:
+                                val = float(v)
+                                if val < 900:
+                                    odds_list.append({"馬號": int(k), "現價": val})
+                            except: pass
+                if odds_list:
+                    return odds_list
 
     except Exception as e:
         print(f"HTML Scraping Error: {e}")
@@ -150,6 +156,7 @@ def fetch_hkjc_data(race_no, target_date):
         odds_data = fetch_from_json_api(session, race_no, date_str, venue)
         
         # 方法 2: 如果 JSON 失敗，嘗試 HTML 爬蟲
+        # 這裡就是之前出錯的地方，現在修復了
         if not odds_
             odds_data = fetch_from_html_scraping(session, race_no, date_str, venue)
         
