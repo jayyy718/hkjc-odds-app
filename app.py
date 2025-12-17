@@ -4,11 +4,11 @@ import numpy as np
 import re
 from datetime import datetime
 
-# ===================== V1.76 (Cache Fix Edition) =====================
-# 修復 AttributeError：透過重新命名快取函數 (get_database_v2) 
-# 強制系統建立包含 clear_all 功能的全新資料庫物件。
+# ===================== V1.77 (Odds Range Filter Edition) =====================
+# 新增功能：前台賽事看板增加「賠率範圍篩選器」。
+# 效果：用戶可以拖動滑桿 (例如 5.0 - 20.0)，系統只會顯示該賠率區間內的馬匹，方便尋找值博冷馬。
 
-st.set_page_config(page_title="賽馬智腦 V1.76", layout="wide")
+st.set_page_config(page_title="賽馬智腦 V1.77", layout="wide")
 
 # --- 核心數據 (不變) ---
 REAL_STATS = {
@@ -87,7 +87,7 @@ def parse_odds_strict_sequence(text):
         else: i += 1
     return odds_map
 
-# ===================== 全域資料庫 (v2) =====================
+# ===================== 全域資料庫 =====================
 class RaceDatabase:
     def __init__(self):
         self.races = {} 
@@ -95,7 +95,6 @@ class RaceDatabase:
     def clear_all(self):
         self.races = {}
 
-# [修復關鍵] 改名為 get_database_v2，強制 Streamlit 重新建立物件
 @st.cache_resource
 def get_database_v2():
     return RaceDatabase()
@@ -106,7 +105,7 @@ if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'
 if 'current_edit_info' not in st.session_state: st.session_state['current_edit_info'] = {"date": datetime.now().date(), "no": 1}
 
 # ===================== UI =====================
-st.sidebar.title("🏇 賽馬智腦 V1.76")
+st.sidebar.title("🏇 賽馬智腦 V1.77")
 page = st.sidebar.radio("選單", ["📊 賽事看板", "🔒 後台管理"])
 
 if page == "🔒 後台管理":
@@ -117,13 +116,11 @@ if page == "🔒 後台管理":
             st.session_state['admin_logged_in'] = True
             st.rerun()
     else:
-        # --- 重置按鈕區 ---
         with st.expander("⚠️ 危險操作區"):
             if st.button("🗑️ 清空所有賽事資料 (重置系統)", type="secondary"):
                 try:
                     db.clear_all()
                     st.success("資料庫已清空，您可以開始輸入新賽日的資料了。")
-                    # 強制重新整理頁面以反映變更
                     st.rerun()
                 except Exception as e:
                     st.error(f"重置失敗: {e}")
@@ -190,21 +187,60 @@ else:
         race_data = db.races[selected_key]
         df = race_data['df'].copy()
         
-        st.markdown(f"### 🏁 {race_data['date']} 第 {race_data['race_no']} 場")
+        # --- [新增] 賠率篩選功能 ---
+        st.divider()
         
-        df = df.sort_values('勝率%', ascending=False).reset_index(drop=True)
-        top4 = df.head(4)
-        cols = st.columns(4)
-        for i, col in enumerate(cols):
-            if i < len(top4):
-                h = top4.iloc[i]
-                col.metric(f"#{h['馬號']} {h['馬名']}", f"{h['勝率%']}%", f"賠率: {h['獨贏']}")
+        # 1. 資料清洗：將賠率轉為數字以便篩選，無法轉換的(如 "-")設為 0
+        def clean_odds(x):
+            try: return float(x)
+            except: return 0.0
+        
+        df['odds_num'] = df['獨贏'].apply(clean_odds)
+        
+        # 2. 計算滑桿的最大最小值
+        max_odds_val = df['odds_num'].max()
+        if max_odds_val == 0: max_odds_val = 100.0 # 防呆
+        
+        # 3. 顯示滑桿
+        c_filter, c_dummy = st.columns([2, 1])
+        with c_filter:
+            st.markdown("##### 🎯 賠率範圍篩選 (尋找值博馬)")
+            odds_range = st.slider(
+                "選擇賠率區間:",
+                min_value=0.0,
+                max_value=float(max_odds_val) + 10.0, # 多留一點緩衝
+                value=(0.0, float(max_odds_val) + 10.0),
+                step=0.5
+            )
+        
+        # 4. 執行篩選
+        mask = (df['odds_num'] >= odds_range[0]) & (df['odds_num'] <= odds_range[1])
+        # 如果使用者沒有篩選 0 (即最小值設大於0)，則把沒有賠率的馬過濾掉
+        if odds_range[0] > 0:
+            mask = mask & (df['odds_num'] > 0)
+            
+        df_filtered = df[mask].copy()
+        
+        # --- 顯示篩選結果 ---
+        st.markdown(f"### 🏁 {race_data['date']} 第 {race_data['race_no']} 場 (符合條件: {len(df_filtered)} 匹)")
+        
+        df_filtered = df_filtered.sort_values('勝率%', ascending=False).reset_index(drop=True)
+        top4 = df_filtered.head(4)
+        
+        if not top4.empty:
+            cols = st.columns(4)
+            for i, col in enumerate(cols):
+                if i < len(top4):
+                    h = top4.iloc[i]
+                    col.metric(f"#{h['馬號']} {h['馬名']}", f"{h['勝率%']}%", f"賠率: {h['獨贏']}")
+        else:
+            st.warning("⚠️ 此賠率範圍內沒有馬匹。")
         
         st.divider()
-        display_cols = [c for c in ['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅', '評分', '6次近績'] if c in df.columns]
+        display_cols = [c for c in ['馬號', '馬名', '勝率%', '獨贏', '騎師', '練馬師', '檔位', '負磅', '評分', '6次近績'] if c in df_filtered.columns]
         
         st.dataframe(
-            df[display_cols],
+            df_filtered[display_cols],
             column_config={
                 "勝率%": st.column_config.ProgressColumn("AI 勝率", format="%.1f%%", min_value=0, max_value=100),
                 "獨贏": st.column_config.TextColumn("獨贏賠率"),
